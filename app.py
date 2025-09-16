@@ -57,16 +57,19 @@ if uploaded_file is not None:
             writer.writerow(["Begin Line", ""])
             for lat, lon in coords:
                 writer.writerow([lat, lon])
-            writer.writerow(["End Line", ""])
+            writer.writerow(["End", ""])
 
-        # Write TXT (mirrors CSV structure)
+        # Write TXT (with comma after last coordinate line)
         txt_path = os.path.join(tmpdir, "centerline.txt")
         with open(txt_path, "w", encoding="utf-8") as txtfile:
-            txtfile.write("latitude, longitude\n")
+            txtfile.write("latitude,longitude\n")
             txtfile.write("Begin Line,\n")
-            for lat, lon in coords:
-                txtfile.write(f"{lat}, {lon}\n")
-            txtfile.write("End Line,\n")
+            for i, (lat, lon) in enumerate(coords):
+                line = f"{lat},{lon}"
+                if i == len(coords) - 1:
+                    line += ","  # Add comma after last coordinate
+                txtfile.write(line + "\n")
+            txtfile.write("End,\n")
 
         # Create ZIP
         zip_path = os.path.join(tmpdir, "centerline_bundle.zip")
