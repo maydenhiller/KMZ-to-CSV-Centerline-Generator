@@ -29,17 +29,17 @@ def parse_coordinates(kml_path):
     coords = []
     seen = set()
 
-    for placemark in root.findall('.//kml:Placemark', ns):
-        for linestring in placemark.findall('.//kml:LineString', ns):
-            coord_elem = linestring.find('.//kml:coordinates', ns)
-            if coord_elem is not None:
-                coord_text = coord_elem.text.strip()
-                for pair in coord_text.split():
-                    lon, lat, *_ = pair.split(',')
-                    key = (round(float(lat), 6), round(float(lon), 6))
-                    if key not in seen:
-                        coords.append((lat, lon))
-                        seen.add(key)
+    # Find all LineStrings inside Placemark or MultiGeometry
+    for linestring in root.findall('.//kml:LineString', ns):
+        coord_elem = linestring.find('.//kml:coordinates', ns)
+        if coord_elem is not None:
+            coord_text = coord_elem.text.strip()
+            for pair in coord_text.split():
+                lon, lat, *_ = pair.split(',')
+                key = (round(float(lat), 6), round(float(lon), 6))
+                if key not in seen:
+                    coords.append((lat, lon))
+                    seen.add(key)
 
     return coords
 
