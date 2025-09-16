@@ -31,6 +31,9 @@ def parse_coordinates(kml_path):
             coords.append((lat, lon))
     return coords
 
+def coordinates_match(c1, c2, tolerance=1e-6):
+    return abs(float(c1[0]) - float(c2[0])) < tolerance and abs(float(c1[1]) - float(c2[1])) < tolerance
+
 uploaded_file = st.file_uploader("Choose a KML or KMZ file", type=["kml", "kmz"])
 
 if uploaded_file is not None:
@@ -48,6 +51,11 @@ if uploaded_file is not None:
             kml_path = filepath
 
         coords = parse_coordinates(kml_path)
+
+        # Detect and trim loop
+        if len(coords) > 1 and coordinates_match(coords[0], coords[-1]):
+            coords.pop()
+            st.warning("Loop detected: last coordinate matched first. Final point removed to prevent closure.")
 
         # Write CSV
         csv_path = os.path.join(tmpdir, "centerline.csv")
