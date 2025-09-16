@@ -5,9 +5,9 @@ import os
 import xml.etree.ElementTree as ET
 import csv
 
-st.set_page_config(page_title="KML/KMZ to CSV Converter")
+st.set_page_config(page_title="KMZ-to-CSV-Centerline-Generator")
 
-st.title("KML/KMZ to CSV Converter")
+st.title("KMZ-to-CSV-Centerline-Generator")
 st.write("Upload a `.kml` or `.kmz` file to extract coordinates into `Centerline.csv`.")
 
 def extract_kml_from_kmz(kmz_file, extract_dir):
