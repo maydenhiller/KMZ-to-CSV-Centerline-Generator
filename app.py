@@ -18,21 +18,35 @@ def extract_kml_from_kmz(kmz_file, extract_dir):
                 return os.path.join(extract_dir, name)
     return None
 
+def coordinates_match(c1, c2, tolerance=1e-6):
+    return abs(float(c1[0]) - float(c2[0])) < tolerance and abs(float(c1[1]) - float(c2[1])) < tolerance
+
 def parse_coordinates(kml_path):
     tree = ET.parse(kml_path)
     root = tree.getroot()
     ns = {'kml': 'http://www.opengis.net/kml/2.2'}
 
     coords = []
-    for coord_elem in root.findall('.//kml:coordinates', ns):
-        coord_text = coord_elem.text.strip()
-        for pair in coord_text.split():
-            lon, lat, *_ = pair.split(',')
-            coords.append((lat, lon))
-    return coords
+    last_coord = None
 
-def coordinates_match(c1, c2, tolerance=1e-6):
-    return abs(float(c1[0]) - float(c2[0])) < tolerance and abs(float(c1[1]) - float(c2[1])) < tolerance
+    for placemark in root.findall('.//kml:Placemark', ns):
+        for linestring in placemark.findall('.//kml:LineString', ns):
+            coord_elem = linestring.find('.//kml:coordinates', ns)
+            if coord_elem is not None:
+                coord_text = coord_elem.text.strip()
+                for pair in coord_text.split():
+                    lon, lat, *_ = pair.split(',')
+                    coord = (lat, lon)
+                    if last_coord is None or not coordinates_match(coord, last_coord):
+                        coords.append(coord)
+                        last_coord = coord
+
+    # Final check: prevent loop closure
+    if len(coords) > 1 and coordinates_match(coords[0], coords[-1]):
+        coords.pop()
+        st.warning("Loop detected: last coordinate matched first. Final point removed to prevent closure.")
+
+    return coords
 
 uploaded_file = st.file_uploader("Choose a KML or KMZ file", type=["kml", "kmz"])
 
@@ -51,11 +65,6 @@ if uploaded_file is not None:
             kml_path = filepath
 
         coords = parse_coordinates(kml_path)
-
-        # Detect and trim loop
-        if len(coords) > 1 and coordinates_match(coords[0], coords[-1]):
-            coords.pop()
-            st.warning("Loop detected: last coordinate matched first. Final point removed to prevent closure.")
 
         # Write CSV
         csv_path = os.path.join(tmpdir, "centerline.csv")
