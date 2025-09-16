@@ -59,10 +59,11 @@ if uploaded_file is not None:
                 writer.writerow([lat, lon])
             writer.writerow(["End"])
 
-        # Write TXT
+        # Write TXT (mirrors CSV structure)
         txt_path = os.path.join(tmpdir, "centerline.txt")
         with open(txt_path, "w", encoding="utf-8") as txtfile:
             txtfile.write("Begin Line\n")
+            txtfile.write("Latitude, Longitude\n")
             for lat, lon in coords:
                 txtfile.write(f"{lat}, {lon}\n")
             txtfile.write("End\n")
