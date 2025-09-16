@@ -53,20 +53,20 @@ if uploaded_file is not None:
         csv_path = os.path.join(tmpdir, "centerline.csv")
         with open(csv_path, "w", newline="") as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["Begin Line"])
+            writer.writerow(["Begin Line", ""])
             writer.writerow(["Latitude", "Longitude"])
             for lat, lon in coords:
                 writer.writerow([lat, lon])
-            writer.writerow(["End"])
+            writer.writerow(["End", ""])
 
-        # Write TXT (mirrors CSV structure)
+        # Write TXT (mirrors CSV structure with commas)
         txt_path = os.path.join(tmpdir, "centerline.txt")
         with open(txt_path, "w", encoding="utf-8") as txtfile:
-            txtfile.write("Begin Line\n")
+            txtfile.write("Begin Line,\n")
             txtfile.write("Latitude, Longitude\n")
             for lat, lon in coords:
                 txtfile.write(f"{lat}, {lon}\n")
-            txtfile.write("End\n")
+            txtfile.write("End,\n")
 
         # Create ZIP
         zip_path = os.path.join(tmpdir, "centerline_bundle.zip")
