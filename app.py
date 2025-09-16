@@ -27,19 +27,19 @@ def parse_coordinates(kml_path):
     ns = {'kml': 'http://www.opengis.net/kml/2.2'}
 
     coords = []
-    seen = set()
+    last_coord = None
 
-    # Find all LineStrings inside Placemark or MultiGeometry
+    # Flatten all LineStrings across the document
     for linestring in root.findall('.//kml:LineString', ns):
         coord_elem = linestring.find('.//kml:coordinates', ns)
         if coord_elem is not None:
             coord_text = coord_elem.text.strip()
             for pair in coord_text.split():
                 lon, lat, *_ = pair.split(',')
-                key = (round(float(lat), 6), round(float(lon), 6))
-                if key not in seen:
-                    coords.append((lat, lon))
-                    seen.add(key)
+                coord = (lat, lon)
+                if last_coord is None or not coordinates_match(coord, last_coord):
+                    coords.append(coord)
+                    last_coord = coord
 
     return coords
 
