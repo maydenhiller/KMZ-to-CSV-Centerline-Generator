@@ -8,7 +8,7 @@ import csv
 st.set_page_config(page_title="KMZ-to-CSV-Centerline-Generator")
 
 st.title("KMZ-to-CSV-Centerline-Generator")
-st.write("Upload a `.kml` or `.kmz` file to extract coordinates into `Centerline.csv`.")
+st.write("Upload a `.kml` or `.kmz` file to extract coordinates into `centerline.csv` and `centerline.txt`.")
 
 def extract_kml_from_kmz(kmz_file, extract_dir):
     with zipfile.ZipFile(kmz_file, 'r') as z:
@@ -49,7 +49,8 @@ if uploaded_file is not None:
 
         coords = parse_coordinates(kml_path)
 
-        csv_path = os.path.join(tmpdir, "Centerline.csv")
+        # Write CSV
+        csv_path = os.path.join(tmpdir, "centerline.csv")
         with open(csv_path, "w", newline="") as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(["Begin Line"])
@@ -58,10 +59,7 @@ if uploaded_file is not None:
                 writer.writerow([lat, lon])
             writer.writerow(["End"])
 
-        with open(csv_path, "rb") as f:
-            st.download_button(
-                label="Download Centerline.csv",
-                data=f,
-                file_name="Centerline.csv",
-                mime="text/csv"
-            )
+        # Write TXT
+        txt_path = os.path.join(tmpdir, "centerline.txt")
+        with open(txt_path, "w") as txtfile:
+            txtfile
