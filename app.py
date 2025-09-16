@@ -4,7 +4,6 @@ import tempfile
 import os
 import xml.etree.ElementTree as ET
 import csv
-import shutil
 
 st.set_page_config(page_title="KMZ-to-CSV-Centerline-Generator")
 
@@ -60,9 +59,14 @@ if uploaded_file is not None:
                 writer.writerow([lat, lon])
             writer.writerow(["End", ""])
 
-        # Clone CSV to TXT
+        # Write TXT (DeLorme-compatible)
         txt_path = os.path.join(tmpdir, "centerline.txt")
-        shutil.copyfile(csv_path, txt_path)
+        with open(txt_path, "w", encoding="utf-8") as txtfile:
+            txtfile.write("Begin Line,\n")
+            txtfile.write("latitude,longitude\n")
+            for lat, lon in coords:
+                txtfile.write(f"{lat},{lon}\n")
+            txtfile.write("End,\n")
 
         # Create ZIP
         zip_path = os.path.join(tmpdir, "centerline_bundle.zip")
