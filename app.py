@@ -27,7 +27,7 @@ def parse_coordinates(kml_path):
     ns = {'kml': 'http://www.opengis.net/kml/2.2'}
 
     coords = []
-    last_coord = None
+    seen = set()
 
     for placemark in root.findall('.//kml:Placemark', ns):
         for linestring in placemark.findall('.//kml:LineString', ns):
@@ -36,15 +36,10 @@ def parse_coordinates(kml_path):
                 coord_text = coord_elem.text.strip()
                 for pair in coord_text.split():
                     lon, lat, *_ = pair.split(',')
-                    coord = (lat, lon)
-                    if last_coord is None or not coordinates_match(coord, last_coord):
-                        coords.append(coord)
-                        last_coord = coord
-
-    # Final check: prevent loop closure
-    if len(coords) > 1 and coordinates_match(coords[0], coords[-1]):
-        coords.pop()
-        st.warning("Loop detected: last coordinate matched first. Final point removed to prevent closure.")
+                    key = (round(float(lat), 6), round(float(lon), 6))
+                    if key not in seen:
+                        coords.append((lat, lon))
+                        seen.add(key)
 
     return coords
 
