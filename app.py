@@ -61,5 +61,23 @@ if uploaded_file is not None:
 
         # Write TXT
         txt_path = os.path.join(tmpdir, "centerline.txt")
-        with open(txt_path, "w") as txtfile:
-            txtfile
+        with open(txt_path, "w", encoding="utf-8") as txtfile:
+            txtfile.write("Begin Line\n")
+            for lat, lon in coords:
+                txtfile.write(f"{lat}, {lon}\n")
+            txtfile.write("End\n")
+
+        # Create ZIP
+        zip_path = os.path.join(tmpdir, "centerline_bundle.zip")
+        with zipfile.ZipFile(zip_path, "w") as zipf:
+            zipf.write(csv_path, arcname="centerline.csv")
+            zipf.write(txt_path, arcname="centerline.txt")
+
+        # Download button
+        with open(zip_path, "rb") as f_zip:
+            st.download_button(
+                label="Download centerline_bundle.zip",
+                data=f_zip.read(),
+                file_name="centerline_bundle.zip",
+                mime="application/zip"
+            )
