@@ -28,8 +28,6 @@ def parse_coordinates(kml_path):
         coord_text = coord_elem.text.strip()
         for pair in coord_text.split():
             lon, lat, *_ = pair.split(',')
-            lat = round(float(lat), 7)
-            lon = round(float(lon), 7)
             coords.append((lat, lon))
     return coords
 
@@ -58,16 +56,16 @@ if uploaded_file is not None:
             writer.writerow(["Begin Line", ""])
             writer.writerow(["Latitude", "Longitude"])
             for lat, lon in coords:
-                writer.writerow([f"{lat:.7f}", f"{lon:.7f}"])
+                writer.writerow([lat, lon])
             writer.writerow(["End", ""])
 
-        # Write TXT (mirrors CSV structure with commas)
+        # Write TXT (swapped rows, lowercase header)
         txt_path = os.path.join(tmpdir, "centerline.txt")
         with open(txt_path, "w", encoding="utf-8") as txtfile:
             txtfile.write("Begin Line,\n")
-            txtfile.write("Latitude, Longitude\n")
+            txtfile.write("latitude, longitude\n")
             for lat, lon in coords:
-                txtfile.write(f"{lat:.7f}, {lon:.7f}\n")
+                txtfile.write(f"{lat}, {lon}\n")
             txtfile.write("End,\n")
 
         # Create ZIP
