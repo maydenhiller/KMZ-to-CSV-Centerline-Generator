@@ -28,23 +28,25 @@ def parse_segments(kml_path):
 
     segments = []
 
+    def find_linestrings(element):
+        for linestring in element.findall('.//kml:LineString', ns):
+            coord_elem = linestring.find('.//kml:coordinates', ns)
+            if coord_elem is not None:
+                coord_text = coord_elem.text.strip()
+                segment = []
+                last_coord = None
+                for pair in coord_text.split():
+                    lon, lat, *_ = pair.split(',')
+                    coord = (lat, lon)
+                    if last_coord is None or not coordinates_match(coord, last_coord):
+                        segment.append(coord)
+                        last_coord = coord
+                if segment:
+                    segments.append(segment)
+
     for placemark in root.findall('.//kml:Placemark', ns):
-        for outer_multi in placemark.findall('.//kml:MultiGeometry', ns):
-            for inner_multi in outer_multi.findall('.//kml:MultiGeometry', ns):
-                for linestring in inner_multi.findall('.//kml:LineString', ns):
-                    coord_elem = linestring.find('.//kml:coordinates', ns)
-                    if coord_elem is not None:
-                        coord_text = coord_elem.text.strip()
-                        segment = []
-                        last_coord = None
-                        for pair in coord_text.split():
-                            lon, lat, *_ = pair.split(',')
-                            coord = (lat, lon)
-                            if last_coord is None or not coordinates_match(coord, last_coord):
-                                segment.append(coord)
-                                last_coord = coord
-                        if segment:
-                            segments.append(segment)
+        find_linestrings(placemark)
+
     return segments
 
 uploaded_file = st.file_uploader("Choose a KML or KMZ file", type=["kml", "kmz"])
