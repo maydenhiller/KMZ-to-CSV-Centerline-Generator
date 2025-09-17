@@ -29,17 +29,20 @@ def parse_coordinates(kml_path):
     coords = []
     last_coord = None
 
-    # Flatten all LineStrings across the document
-    for linestring in root.findall('.//kml:LineString', ns):
-        coord_elem = linestring.find('.//kml:coordinates', ns)
-        if coord_elem is not None:
-            coord_text = coord_elem.text.strip()
-            for pair in coord_text.split():
-                lon, lat, *_ = pair.split(',')
-                coord = (lat, lon)
-                if last_coord is None or not coordinates_match(coord, last_coord):
-                    coords.append(coord)
-                    last_coord = coord
+    # Traverse nested MultiGeometry blocks inside Placemark
+    for placemark in root.findall('.//kml:Placemark', ns):
+        for outer_multi in placemark.findall('.//kml:MultiGeometry', ns):
+            for inner_multi in outer_multi.findall('.//kml:MultiGeometry', ns):
+                for linestring in inner_multi.findall('.//kml:LineString', ns):
+                    coord_elem = linestring.find('.//kml:coordinates', ns)
+                    if coord_elem is not None:
+                        coord_text = coord_elem.text.strip()
+                        for pair in coord_text.split():
+                            lon, lat, *_ = pair.split(',')
+                            coord = (lat, lon)
+                            if last_coord is None or not coordinates_match(coord, last_coord):
+                                coords.append(coord)
+                                last_coord = coord
 
     return coords
 
