@@ -21,15 +21,13 @@ def extract_kml_from_kmz(kmz_file, extract_dir):
 def coordinates_match(c1, c2, tolerance=1e-6):
     return abs(float(c1[0]) - float(c2[0])) < tolerance and abs(float(c1[1]) - float(c2[1])) < tolerance
 
-def parse_coordinates(kml_path):
+def parse_segments(kml_path):
     tree = ET.parse(kml_path)
     root = tree.getroot()
     ns = {'kml': 'http://www.opengis.net/kml/2.2'}
 
-    coords = []
-    last_coord = None
+    segments = []
 
-    # Traverse nested MultiGeometry blocks inside Placemark
     for placemark in root.findall('.//kml:Placemark', ns):
         for outer_multi in placemark.findall('.//kml:MultiGeometry', ns):
             for inner_multi in outer_multi.findall('.//kml:MultiGeometry', ns):
@@ -37,14 +35,17 @@ def parse_coordinates(kml_path):
                     coord_elem = linestring.find('.//kml:coordinates', ns)
                     if coord_elem is not None:
                         coord_text = coord_elem.text.strip()
+                        segment = []
+                        last_coord = None
                         for pair in coord_text.split():
                             lon, lat, *_ = pair.split(',')
                             coord = (lat, lon)
                             if last_coord is None or not coordinates_match(coord, last_coord):
-                                coords.append(coord)
+                                segment.append(coord)
                                 last_coord = coord
-
-    return coords
+                        if segment:
+                            segments.append(segment)
+    return segments
 
 uploaded_file = st.file_uploader("Choose a KML or KMZ file", type=["kml", "kmz"])
 
@@ -62,26 +63,28 @@ if uploaded_file is not None:
         else:
             kml_path = filepath
 
-        coords = parse_coordinates(kml_path)
+        segments = parse_segments(kml_path)
 
         # Write CSV
         csv_path = os.path.join(tmpdir, "centerline.csv")
         with open(csv_path, "w", newline="") as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(["Latitude", "Longitude"])
-            writer.writerow(["Begin Line", ""])
-            for lat, lon in coords:
-                writer.writerow([lat, lon])
-            writer.writerow(["End", ""])
+            for segment in segments:
+                writer.writerow(["Begin Line", ""])
+                for lat, lon in segment:
+                    writer.writerow([lat, lon])
+                writer.writerow(["End", ""])
 
         # Write TXT (DeLorme-compatible)
         txt_path = os.path.join(tmpdir, "centerline.txt")
         with open(txt_path, "w", encoding="utf-8") as txtfile:
-            txtfile.write("Begin Line,\n")
-            txtfile.write("latitude,longitude\n")
-            for lat, lon in coords:
-                txtfile.write(f"{lat},{lon}\n")
-            txtfile.write("End,\n")
+            for segment in segments:
+                txtfile.write("Begin Line,\n")
+                txtfile.write("latitude,longitude\n")
+                for lat, lon in segment:
+                    txtfile.write(f"{lat},{lon}\n")
+                txtfile.write("End,\n")
 
         # Create ZIP
         zip_path = os.path.join(tmpdir, "centerline_bundle.zip")
