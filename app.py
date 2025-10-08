@@ -13,7 +13,6 @@ TXT_FILENAME = "Centerline.txt"
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
 
 def read_kml_from_kmz(kmz_bytes: bytes) -> Optional[bytes]:
-    """Extract the first .kml file from a KMZ archive."""
     with zipfile.ZipFile(io.BytesIO(kmz_bytes)) as z:
         preferred = ["doc.kml", "root.kml", "index.kml"]
         names = z.namelist()
@@ -23,7 +22,6 @@ def read_kml_from_kmz(kmz_bytes: bytes) -> Optional[bytes]:
         return z.read(target) if target else None
 
 def parse_coordinates_text(coord_text: str) -> List[Tuple[float, float]]:
-    """Parse KML coordinates string into list of (lat, lon)."""
     coords = []
     for token in coord_text.strip().split():
         parts = token.split(",")
@@ -37,7 +35,6 @@ def parse_coordinates_text(coord_text: str) -> List[Tuple[float, float]]:
     return coords
 
 def extract_linestring_coords(root: etree._Element) -> List[Tuple[float, float]]:
-    """Extract all LineString coordinates from the KML root."""
     coords = []
     for el in root.findall(".//kml:LineString/kml:coordinates", namespaces=KML_NS):
         if el.text:
@@ -64,11 +61,12 @@ def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 def dataframe_to_txt(df: pd.DataFrame) -> bytes:
-    """TXT export with the original formatting you had before (lat,lon only)."""
+    """TXT export in original format: Begin Line ... End Line."""
     buf = io.StringIO()
-    buf.write("Latitude,Longitude\n")
+    buf.write("Begin Line\n")
     for _, row in df.iterrows():
         buf.write(f'{row["Latitude"]},{row["Longitude"]}\n')
+    buf.write("End Line\n")
     return buf.getvalue().encode("utf-8")
 
 def main():
@@ -101,7 +99,6 @@ def main():
         csv_bytes = dataframe_to_csv_bytes(df)
         txt_bytes = dataframe_to_txt(df)
 
-        # Bundle both into a single ZIP
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             zf.writestr(CSV_FILENAME, csv_bytes)
