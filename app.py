@@ -8,6 +8,7 @@ from lxml import etree
 
 APP_TITLE = "KMZ/KML to CSV Centerline Generator"
 CSV_FILENAME = "Centerline.csv"
+TXT_FILENAME = "Centerline.txt"
 
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
 
@@ -62,10 +63,18 @@ def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     df.to_csv(buf, index=False)
     return buf.getvalue().encode("utf-8")
 
+def dataframe_to_txt(df: pd.DataFrame) -> bytes:
+    """TXT export with the original formatting you had before (lat,lon only)."""
+    buf = io.StringIO()
+    buf.write("Latitude,Longitude\n")
+    for _, row in df.iterrows():
+        buf.write(f'{row["Latitude"]},{row["Longitude"]}\n')
+    return buf.getvalue().encode("utf-8")
+
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="centered")
     st.title(APP_TITLE)
-    st.caption("Upload a KMZ or KML file. The app will extract LineString coordinates and export them as CSV.")
+    st.caption("Upload a KMZ or KML file. The app will extract LineString coordinates and export them as CSV and TXT.")
 
     uploaded = st.file_uploader("Upload KMZ or KML", type=["kmz", "kml"])
     if uploaded is None:
@@ -90,12 +99,20 @@ def main():
         st.dataframe(df, use_container_width=True)
 
         csv_bytes = dataframe_to_csv_bytes(df)
+        txt_bytes = dataframe_to_txt(df)
+
+        # Bundle both into a single ZIP
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr(CSV_FILENAME, csv_bytes)
+            zf.writestr(TXT_FILENAME, txt_bytes)
+        zip_buffer.seek(0)
 
         st.download_button(
-            label="Download CSV",
-            data=csv_bytes,
-            file_name=CSV_FILENAME,
-            mime="text/csv",
+            label="Download CSV + TXT (zipped)",
+            data=zip_buffer,
+            file_name="Centerline_Files.zip",
+            mime="application/zip",
         )
 
     except Exception as e:
