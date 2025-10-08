@@ -61,9 +61,10 @@ def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 def dataframe_to_txt(df: pd.DataFrame) -> bytes:
-    """TXT export in original format: Begin Line ... End Line."""
+    """TXT export in original format: Begin Line, header, coords, End Line."""
     buf = io.StringIO()
     buf.write("Begin Line\n")
+    buf.write("Latitude,Longitude\n")
     for _, row in df.iterrows():
         buf.write(f'{row["Latitude"]},{row["Longitude"]}\n')
     buf.write("End Line\n")
@@ -99,6 +100,7 @@ def main():
         csv_bytes = dataframe_to_csv_bytes(df)
         txt_bytes = dataframe_to_txt(df)
 
+        # Bundle both into a single ZIP
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             zf.writestr(CSV_FILENAME, csv_bytes)
