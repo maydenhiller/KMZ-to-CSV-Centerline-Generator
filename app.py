@@ -34,25 +34,29 @@ def parse_coordinates_text(coord_text: str) -> List[Tuple[float, float]]:
                 continue
     return coords
 
-def extract_linestring_coords(root: etree._Element) -> List[Tuple[float, float]]:
-    coords = []
+def extract_linestrings(root: etree._Element) -> List[List[Tuple[float, float]]]:
+    """Extract each LineString as its own list of coordinates."""
+    lines = []
     for el in root.findall(".//kml:LineString/kml:coordinates", namespaces=KML_NS):
         if el.text:
-            coords.extend(parse_coordinates_text(el.text))
-    return coords
+            coords = parse_coordinates_text(el.text)
+            if coords:
+                lines.append(coords)
+    return lines
 
 def parse_kml(kml_bytes: bytes) -> pd.DataFrame:
     parser = etree.XMLParser(recover=True)
     root = etree.fromstring(kml_bytes, parser=parser)
-    coords = extract_linestring_coords(root)
+    lines = extract_linestrings(root)
     rows = []
-    for lat, lon in coords:
-        rows.append({
-            "Latitude": lat,
-            "Longitude": lon,
-            "Icon": "none",
-            "LineStringColor": "Red"
-        })
+    for coords in lines:
+        for lat, lon in coords:
+            rows.append({
+                "Latitude": lat,
+                "Longitude": lon,
+                "Icon": "none",
+                "LineStringColor": "Red"
+            })
     return pd.DataFrame(rows, columns=["Latitude", "Longitude", "Icon", "LineStringColor"])
 
 def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
@@ -61,13 +65,34 @@ def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 def dataframe_to_txt(df: pd.DataFrame) -> bytes:
-    """TXT export in original format: Begin Line, header, coords, End."""
+    """TXT export with multiple blocks: Begin Line … End Line for each LineString."""
     buf = io.StringIO()
-    buf.write("Begin Line\n")
-    buf.write("Latitude,Longitude\n")
-    for _, row in df.iterrows():
-        buf.write(f'{row["Latitude"]},{row["Longitude"]}\n')
-    buf.write("End\n")
+    # Split by contiguous blocks of coordinates (LineStrings)
+    # We reconstruct by grouping rows back into separate LineStrings
+    # Since CSV has no LineID, we rely on extract_linestrings again
+    # So we regenerate from df order
+    coords = list(zip(df["Latitude"], df["Longitude"]))
+    # For simplicity, just reuse extract_linestrings logic at parse time
+    # Here we assume df rows are in order of LineStrings
+    # We'll rebuild blocks by scanning for breaks in continuity
+    # But simpler: just re-run parse_kml logic separately
+    # Instead, we’ll just output one big block if multiple lines exist
+    # Correction: we need to preserve multiple blocks
+    # So better to regenerate from df grouped by contiguous segments
+    # But since we lost LineID, we must re-parse KML again
+    # => easiest: pass lines into dataframe_to_txt instead of df
+    # For now, assume df has attribute _lines attached
+    if hasattr(df, "_lines"):
+        lines = df._lines
+    else:
+        lines = [coords]
+
+    for line in lines:
+        buf.write("Begin Line\n")
+        buf.write("Latitude,Longitude\n")
+        for lat, lon in line:
+            buf.write(f"{lat},{lon}\n")
+        buf.write("End Line\n\n")
     return buf.getvalue().encode("utf-8")
 
 def main():
@@ -89,7 +114,24 @@ def main():
         else:
             kml_bytes = uploaded.read()
 
-        df = parse_kml(kml_bytes)
+        parser = etree.XMLParser(recover=True)
+        root = etree.fromstring(kml_bytes, parser=parser)
+        lines = extract_linestrings(root)
+
+        # Build DataFrame
+        rows = []
+        for coords in lines:
+            for lat, lon in coords:
+                rows.append({
+                    "Latitude": lat,
+                    "Longitude": lon,
+                    "Icon": "none",
+                    "LineStringColor": "Red"
+                })
+        df = pd.DataFrame(rows, columns=["Latitude", "Longitude", "Icon", "LineStringColor"])
+        # Attach original lines for TXT export
+        df._lines = lines
+
         if df.empty:
             st.warning("No LineString geometries found in this file.")
             return
