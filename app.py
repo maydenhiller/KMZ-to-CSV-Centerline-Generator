@@ -48,7 +48,7 @@ def extract_linestrings(root: etree._Element) -> List[List[Tuple[float, float]]]
 
 def lines_to_dataframe(lines: List[List[Tuple[float, float]]]) -> pd.DataFrame:
     rows = []
-    for coords in lines:
+    for idx, coords in enumerate(lines):
         for lat, lon in coords:
             rows.append(
                 {
@@ -56,6 +56,17 @@ def lines_to_dataframe(lines: List[List[Tuple[float, float]]]) -> pd.DataFrame:
                     "Longitude": lon,
                     "Icon": "none",
                     "LineStringColor": "Red",
+                }
+            )
+        # Insert a break row between LineStrings so CSV consumers do not
+        # connect the end of one segment to the start of the next one.
+        if idx < len(lines) - 1:
+            rows.append(
+                {
+                    "Latitude": None,
+                    "Longitude": None,
+                    "Icon": "",
+                    "LineStringColor": "",
                 }
             )
     return pd.DataFrame(rows, columns=["Latitude", "Longitude", "Icon", "LineStringColor"])
