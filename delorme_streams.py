@@ -887,6 +887,63 @@ def resolve_template_dmt_path() -> Path:
     return tmp_path
 
 
+_ANNOTATE_WORKSPACE = "DeLormeComponents/DeLorme.Annotate.Workspace"
+_STREAM_ANNOTATE_FILENAMES = f"{_ANNOTATE_WORKSPACE}/Annotate.Filenames"
+_STREAM_ANNOTATE_ACTIVE_FILENAMES = f"{_ANNOTATE_WORKSPACE}/Annotate.ActiveFilenames"
+
+
+def _annotate_filename_type_codes(n: int) -> List[int]:
+    """
+    Per-layer type dword values observed in a stock DeLorme template for draw objects:
+    first object 6, second 1, third+ 0. Must match ``n`` display names.
+    """
+    if n <= 0:
+        return []
+    out: List[int] = []
+    for i in range(n):
+        if i == 0:
+            out.append(6)
+        elif i == 1:
+            out.append(1)
+        else:
+            out.append(0)
+    return out
+
+
+def build_annotate_filenames_centerlines_only(display_names: Sequence[str]) -> bytes:
+    """
+    Binary body for ``Annotate.Filenames``: only in-document centerline layers.
+
+    The stock template also lists an external ``.an1`` path, Notes, Combined Access,
+    and Final AGMs — those entries make XMap prefer missing files and hide embedded
+    centerlines. This builder lists **only** the given display names (OLE stream
+    leaf titles like ``Our CL CL (2)``).
+    """
+    n = len(display_names)
+    if n == 0:
+        raise ValueError("Need at least one centerline display name.")
+    kinds = _annotate_filename_type_codes(n)
+    parts: List[bytes] = []
+    for kind, name in zip(kinds, display_names):
+        s = name.encode("ascii")
+        parts.append(struct.pack("<II", kind, len(s)))
+        parts.append(s)
+    # Trailing dword observed in template streams (value 1).
+    parts.append(struct.pack("<I", 1))
+    return b"".join(parts)
+
+
+def build_annotate_active_filenames(active_display_name: str) -> bytes:
+    """
+    Binary body for ``Annotate.ActiveFilenames``: active layer is the first centerline.
+
+    Replaces the template default that points at ``C:\\...\\Final AGMs63.an1``, which
+    breaks display when that file does not exist.
+    """
+    s = active_display_name.encode("ascii")
+    return struct.pack("<II", 1, len(s)) + s
+
+
 def list_annotate_cl_stream_paths(ole) -> List[str]:
     out: List[Tuple[str, str]] = []
     for s in ole.listdir():
@@ -949,6 +1006,10 @@ def build_dmt_bytes(
             data = ole.openstream(sp).read()
             sizes.append(len(data))
             headers.append(data[:96])
+        annotate_filenames_size = len(ole.openstream(_STREAM_ANNOTATE_FILENAMES).read())
+        annotate_active_filenames_size = len(
+            ole.openstream(_STREAM_ANNOTATE_ACTIVE_FILENAMES).read()
+        )
 
     coords_list: List[List[Tuple[float, float]]] = [list(line) for line in ordered_lat_lon_lines]
     note = ""
@@ -986,6 +1047,19 @@ def build_dmt_bytes(
                 payload = build_annotate_line_stream(coords_list[u], colorrefs[u], headers[j])
                 padded = pad_stream(payload, sizes[j])
                 ole_w.write_stream(stream_paths[j], padded)
+            # Drop sample-template layer list + external .an1 pointer so XMap shows
+            # embedded centerlines only (see build_annotate_filenames_centerlines_only).
+            display_names = [stream_path_str(sp).split("/")[-1] for sp in stream_paths]
+            fn_body = build_annotate_filenames_centerlines_only(display_names)
+            af_body = build_annotate_active_filenames(display_names[0])
+            ole_w.write_stream(
+                _STREAM_ANNOTATE_FILENAMES,
+                pad_stream(fn_body, annotate_filenames_size),
+            )
+            ole_w.write_stream(
+                _STREAM_ANNOTATE_ACTIVE_FILENAMES,
+                pad_stream(af_body, annotate_active_filenames_size),
+            )
         with open(tmp, "rb") as f:
             return f.read(), note
     finally:
