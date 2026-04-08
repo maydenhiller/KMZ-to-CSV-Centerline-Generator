@@ -273,14 +273,8 @@ def main():
     try:
         tpl = resolve_template_dmt_path()
         dmt_bytes = build_dmt_bytes(tpl, all_lines, colorrefs)
-    except FileNotFoundError as e:
-        st.error(
-            "The DeLorme template file is missing from the deployment. "
-            "Commit `template.dmt.zlib` (or `template.dmt`) in the repo next to `delorme_streams.py`."
-        )
-        st.caption(str(e))
     except Exception as e:
-        st.warning(f"Could not build .dmt: {e}")
+        st.warning(f"Could not build combined .dmt (DeLorme file): {e}")
 
     zip_buffer = io.BytesIO()
     processed_any = False
