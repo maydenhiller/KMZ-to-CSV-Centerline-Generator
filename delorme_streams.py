@@ -8,50 +8,45 @@ See: https://github.com/GPSBabel/gpsbabel/blob/gpsbabel_1_7_0/an1.cc
 from __future__ import annotations
 
 import ctypes
+import os
 import re
 import struct
+import tempfile
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
-
-# Windows COLORREF: 0x00bbggrr (blue, green, red bytes)
-COLOR_REFS: List[int] = [
-    0x000000FF,  # Red — primary centerline
-    0x0000FF00,  # Neon green
-    0x00FFFF00,  # Yellow (BGR)
-    0x00FF80FF,  # Pink
-    0x000080FF,  # Orange
-]
-
-# Extras: avoid strong blues and reds; distinct from palette above
-EXTRA_COLOR_REFS: List[int] = [
-    0x0000FFFF,  # Cyan
-    0x00800080,  # Purple
-    0x00008080,  # Olive
-    0x00B4824A,  # Copper / brown
-    0x00D4AF37,  # Gold
-    0x00CC5500,  # Dark orange
-    0x005A2D2D,  # Maroon
-    0x007FFF00,  # Chartreuse
-    0x00A0522D,  # Sienna
-    0x006B8E23,  # Olive drab
-]
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 
-def colorref_for_line_index(i: int) -> int:
-    if i < len(COLOR_REFS):
-        return COLOR_REFS[i]
-    j = i - len(COLOR_REFS)
-    if j < len(EXTRA_COLOR_REFS):
-        return EXTRA_COLOR_REFS[j]
-    # Deterministic fallback: step hue-ish without using pure blue or pure red
-    return EXTRA_COLOR_REFS[j % len(EXTRA_COLOR_REFS)]
+def kml_abgr_to_colorref(kml_color: Optional[str]) -> int:
+    """
+    KML LineStyle <color> is eight hex digits aabbggrr (alpha, blue, green, red).
+    Windows COLORREF uses the same 24-bit layout: 0x00bbggrr.
+    """
+    default = 0x00FFFFFF
+    if not kml_color:
+        return default
+    s = kml_color.strip().lower().replace("#", "")
+    if len(s) == 8:
+        _aa, bb, gg, rr = s[0:2], s[2:4], s[4:6], s[6:8]
+    elif len(s) == 6:
+        bb, gg, rr = s[0:2], s[2:4], s[4:6]
+    else:
+        return default
+    try:
+        r = int(rr, 16)
+        g = int(gg, 16)
+        b = int(bb, 16)
+        return r | (g << 8) | (b << 16)
+    except ValueError:
+        return default
 
 
-def color_name_for_index(i: int) -> str:
-    names = ["Red", "Neon Green", "Yellow", "Pink", "Orange"]
-    if i < len(names):
-        return names[i]
-    return f"Color {i + 1}"
+def kml_abgr_to_hex_display(kml_color: Optional[str]) -> str:
+    """CSV-friendly #RRGGBB from KML LineStyle color."""
+    cref = kml_abgr_to_colorref(kml_color)
+    r = cref & 0xFF
+    g = (cref >> 8) & 0xFF
+    b = (cref >> 16) & 0xFF
+    return f"#{r:02X}{g:02X}{b:02X}"
 
 
 def encode_ord_deg(deg: float) -> int:
