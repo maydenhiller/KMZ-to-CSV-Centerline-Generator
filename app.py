@@ -262,6 +262,7 @@ def main():
         st.info("No valid LineString data found.")
         return
 
+    n_lines = len(all_lines)
     colorrefs = [kml_abgr_to_colorref(c) for c in all_kml_abgr]
 
     if n_lines == 1:
