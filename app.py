@@ -272,7 +272,9 @@ def main():
     dmt_bytes: Optional[bytes] = None
     try:
         tpl = resolve_template_dmt_path()
-        dmt_bytes = build_dmt_bytes(tpl, all_lines, colorrefs)
+        dmt_bytes, dmt_note = build_dmt_bytes(tpl, all_lines, colorrefs)
+        if dmt_note:
+            st.info(dmt_note)
     except Exception as e:
         st.warning(f"Could not build combined .dmt (DeLorme file): {e}")
 
