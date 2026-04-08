@@ -11,7 +11,7 @@ from delorme_streams import (
     build_dmt_bytes,
     kml_abgr_to_colorref,
     kml_abgr_to_hex_display,
-    template_dmt_path,
+    resolve_template_dmt_path,
 )
 
 APP_TITLE = "KMZ/KML to CSV Centerline Generator"
@@ -225,8 +225,7 @@ def main():
     st.title(APP_TITLE)
     st.caption(
         "Upload one or more KMZ/KML files. LineString coordinates and line colors from the file "
-        "(LineStyle / styleUrl) are exported to CSV and TXT; a combined DeLorme .dmt is added when "
-        "`template.dmt` is available beside the app."
+        "(LineStyle / styleUrl) are exported to CSV, TXT, and a combined DeLorme .dmt in the zip."
     )
 
     uploads = st.file_uploader(
@@ -270,17 +269,18 @@ def main():
     else:
         dmt_filename = "Our CL and adjacent CLs.dmt"
 
-    tpl = template_dmt_path()
     dmt_bytes: Optional[bytes] = None
-    if tpl.is_file():
-        try:
-            dmt_bytes = build_dmt_bytes(tpl, all_lines, colorrefs)
-        except Exception as e:
-            st.warning(f"Could not build .dmt: {e}")
-    else:
-        st.info(
-            f"Add `template.dmt` next to the app (expected at `{tpl}`) to include a combined .dmt in the zip."
+    try:
+        tpl = resolve_template_dmt_path()
+        dmt_bytes = build_dmt_bytes(tpl, all_lines, colorrefs)
+    except FileNotFoundError as e:
+        st.error(
+            "The DeLorme template file is missing from the deployment. "
+            "Commit `template.dmt.zlib` (or `template.dmt`) in the repo next to `delorme_streams.py`."
         )
+        st.caption(str(e))
+    except Exception as e:
+        st.warning(f"Could not build .dmt: {e}")
 
     zip_buffer = io.BytesIO()
     processed_any = False
