@@ -28,6 +28,10 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 # Materialized .dmt when using embedded template (Streamlit / copy-paste deploy).
 _materialized_template: Optional[Path] = None
 
+# Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
+# can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
+DMT_EXPORT_BUILD_ID = "20260409-layer6-map2d-v1"
+
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
     '33+S4ZjDOQflXM9lfWs9j+u397x7z8ybPXtmEuLk6VFd37pw+CxvF+NYvqgq/qd18mLSDtu6lmvT'
