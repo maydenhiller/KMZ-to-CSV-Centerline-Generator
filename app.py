@@ -15,9 +15,6 @@ from delorme_streams import (
 )
 
 APP_TITLE = "KMZ/KML to CSV Centerline Generator"
-KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
-KML_URI = "http://www.opengis.net/kml/2.2"
-KML = f"{{{KML_URI}}}"
 
 
 def local_tag(el: etree._Element) -> str:
@@ -53,11 +50,19 @@ def _styleurl_to_id(styleurl: str) -> str:
     return styleurl.strip().split("#")[-1].split("/")[-1]
 
 
+def _child_by_local_tag(parent: etree._Element, local: str) -> Optional[etree._Element]:
+    """Namespace-agnostic first direct child with this local tag name."""
+    for ch in parent:
+        if local_tag(ch) == local:
+            return ch
+    return None
+
+
 def _linestyle_color_from_style_element(style_el: etree._Element) -> Optional[str]:
-    ls = style_el.find(f"{KML}LineStyle")
+    ls = _child_by_local_tag(style_el, "LineStyle")
     if ls is None:
         return None
-    c = ls.find(f"{KML}color")
+    c = _child_by_local_tag(ls, "color")
     if c is not None and c.text and c.text.strip():
         return c.text.strip()
     return None
@@ -81,11 +86,13 @@ def collect_style_colors(root: etree._Element) -> Dict[str, str]:
         sid = el.get("id")
         if not sid:
             continue
-        for pair in el.findall(f"{KML}Pair"):
-            key_el = pair.find(f"{KML}key")
+        for pair in el:
+            if local_tag(pair) != "Pair":
+                continue
+            key_el = _child_by_local_tag(pair, "key")
             if key_el is None or (key_el.text or "").strip() != "normal":
                 continue
-            su = pair.find(f"{KML}styleUrl")
+            su = _child_by_local_tag(pair, "styleUrl")
             if su is None or not su.text:
                 continue
             ref = _styleurl_to_id(su.text)
@@ -108,8 +115,8 @@ def effective_kml_color_for_linestring(
     linestring_el: etree._Element,
     style_colors: Dict[str, str],
 ) -> str:
-    """Resolve KML LineStyle color (aabbggrr); default opaque white."""
-    default = "ffffffff"
+    """Resolve KML LineStyle color (aabbggrr); default opaque red (visible on the map)."""
+    default = "ff0000ff"
     pm = ancestor_placemark(linestring_el)
     if pm is None:
         return default
@@ -120,7 +127,7 @@ def effective_kml_color_for_linestring(
             if col:
                 return col
 
-    su = pm.find(f"{KML}styleUrl")
+    su = _child_by_local_tag(pm, "styleUrl")
     if su is not None and su.text:
         ref = _styleurl_to_id(su.text)
         if ref in style_colors:
@@ -129,7 +136,7 @@ def effective_kml_color_for_linestring(
     e = pm.getparent()
     while e is not None:
         if local_tag(e) in ("Folder", "Document"):
-            su = e.find(f"{KML}styleUrl")
+            su = _child_by_local_tag(e, "styleUrl")
             if su is not None and su.text:
                 ref = _styleurl_to_id(su.text)
                 if ref in style_colors:
@@ -139,24 +146,73 @@ def effective_kml_color_for_linestring(
     return default
 
 
+def _coordinate_elements_for_polylines(root: etree._Element) -> List[etree._Element]:
+    """
+    Namespace-agnostic: KML 2.0/2.1/2.2 and default-prefix documents all use different xmlns URIs;
+    fixed-prefix searches miss ``http://earth.google.com/kml/2.0`` and many exports.
+    """
+    # LineString → coordinates
+    els = root.xpath(
+        ".//*[local-name()='LineString']/*[local-name()='coordinates']"
+        "[string-length(normalize-space(.)) > 0]"
+    )
+    # Polygon outer ring (common for “outline” exports)
+    els.extend(
+        root.xpath(
+            ".//*[local-name()='Polygon']"
+            "/*[local-name()='outerBoundaryIs']"
+            "//*[local-name()='LinearRing']"
+            "/*[local-name()='coordinates']"
+            "[string-length(normalize-space(.)) > 0]"
+        )
+    )
+    return els
+
+
+def _coords_from_gx_track(track_el: etree._Element) -> List[Tuple[float, float]]:
+    """Google Earth ``gx:Track``: collect ``gx:coord`` points in document order (namespace-agnostic)."""
+    out: List[Tuple[float, float]] = []
+    for coord_el in track_el.iter():
+        if local_tag(coord_el) != "coord":
+            continue
+        t = (coord_el.text or "").strip().split()
+        if len(t) >= 2:
+            try:
+                lon = float(t[0])
+                lat = float(t[1])
+                out.append((lat, lon))
+            except ValueError:
+                continue
+    return out
+
+
 def extract_linestrings_with_colors(
     root: etree._Element,
 ) -> Tuple[List[List[Tuple[float, float]]], List[str]]:
     style_colors = collect_style_colors(root)
     lines: List[List[Tuple[float, float]]] = []
     colors: List[str] = []
-    for coord_el in root.findall(".//kml:LineString/kml:coordinates", namespaces=KML_NS):
-        if not coord_el.text:
-            continue
-        coords = parse_coordinates_text(coord_el.text)
+
+    for coord_el in _coordinate_elements_for_polylines(root):
+        coords = parse_coordinates_text(coord_el.text or "")
         if not coords:
             continue
-        ls = coord_el.getparent()
-        if ls is None:
+        geom_parent = coord_el.getparent()
+        if geom_parent is None:
             continue
-        kml_abgr = effective_kml_color_for_linestring(ls, style_colors)
+        kml_abgr = effective_kml_color_for_linestring(geom_parent, style_colors)
         lines.append(coords)
         colors.append(kml_abgr)
+
+    # gx:Track (often used instead of LineString)
+    for track_el in root.xpath(".//*[local-name()='Track']"):
+        coords = _coords_from_gx_track(track_el)
+        if len(coords) < 2:
+            continue
+        kml_abgr = effective_kml_color_for_linestring(track_el, style_colors)
+        lines.append(coords)
+        colors.append(kml_abgr)
+
     return lines, colors
 
 
@@ -214,6 +270,9 @@ def process_upload(uploaded) -> Tuple[List[List[Tuple[float, float]]], List[str]
     else:
         kml_bytes = raw
 
+    if kml_bytes.startswith(b"\xef\xbb\xbf"):
+        kml_bytes = kml_bytes[3:]
+
     parser = etree.XMLParser(recover=True)
     root = etree.fromstring(kml_bytes, parser=parser)
     lines, kml_abgr_colors = extract_linestrings_with_colors(root)
@@ -224,8 +283,10 @@ def main():
     st.set_page_config(page_title=APP_TITLE, layout="centered")
     st.title(APP_TITLE)
     st.caption(
-        "Upload one or more KMZ/KML files. LineString coordinates and line colors from the file "
-        "(LineStyle / styleUrl) are exported to CSV, TXT, and a combined DeLorme .dmt in the zip."
+        "Upload KMZ/KML files. LineStrings, polygon outlines, and gx:Track paths are read. "
+        "The zip contains **CSV** and **TXT** sidecars (plain text) plus a **.dmt** file: the .dmt is a "
+        "DeLorme map with **draw layers** (not a copy of the TXT inside the .dmt). "
+        "Keep **template.dmt** next to the app (or rely on the built-in shell) for .dmt export."
     )
 
     uploads = st.file_uploader(
