@@ -176,8 +176,11 @@ def kml_abgr_to_colorref(kml_color: Optional[str]) -> int:
     """
     KML LineStyle <color> is eight hex digits aabbggrr (alpha, blue, green, red).
     Windows COLORREF uses the same 24-bit layout: 0x00bbggrr.
+
+    Default is **red** (not white): white centerlines are invisible on typical map backgrounds.
     """
-    default = 0x00FFFFFF
+    # Opaque red in COLORREF (0x00bbggrr): rr=0xFF
+    default = 0x000000FF
     if not kml_color:
         return default
     s = kml_color.strip().lower().replace("#", "")
