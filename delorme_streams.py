@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260409-layer6-map2d-v1"
+DMT_EXPORT_BUILD_ID = "20260409-no-map2d-view-patch-v2"
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -426,9 +426,6 @@ def resolve_template_dmt_path() -> Path:
 _ANNOTATE_WORKSPACE = "DeLormeComponents/DeLorme.Annotate.Workspace"
 _STREAM_ANNOTATE_FILENAMES = f"{_ANNOTATE_WORKSPACE}/Annotate.Filenames"
 _STREAM_ANNOTATE_ACTIVE_FILENAMES = f"{_ANNOTATE_WORKSPACE}/Annotate.ActiveFilenames"
-_MAP2D = "DeLormeComponents/DeLorme.Map2D.1"
-_STREAM_MAP2D_STATE = f"{_MAP2D}/Map2DState"
-_STREAM_MAP2D_STATE2 = f"{_MAP2D}/Map2DState2"
 
 
 def _annotate_filename_type_codes(n: int) -> List[int]:
@@ -441,31 +438,6 @@ def _annotate_filename_type_codes(n: int) -> List[int]:
     if n <= 0:
         return []
     return [6] * n
-
-
-def _bounds_center_lat_lon(
-    lines: Sequence[Sequence[Tuple[float, float]]],
-) -> Tuple[float, float]:
-    """Return ``(center_lat, center_lon)`` for all vertices."""
-    flat = [p for line in lines for p in line]
-    if not flat:
-        return (0.0, 0.0)
-    lats = [p[0] for p in flat]
-    lons = [p[1] for p in flat]
-    return ((min(lats) + max(lats)) / 2.0, (min(lons) + max(lons)) / 2.0)
-
-
-def _patch_map2d_center(buf: bytes, center_lon: float, center_lat: float) -> bytes:
-    """
-    ``Map2DState`` / ``Map2DState2`` (54 bytes): template bytes 4–11 are not valid lon/lat, so
-    the saved view stays on the blank-map placeholder and user lines (e.g. Texas) are off-screen.
-    Overwrite with **float32** WGS84 lon, lat (matches observed layout).
-    """
-    if len(buf) < 12:
-        return buf
-    b = bytearray(buf)
-    struct.pack_into("<ff", b, 4, float(center_lon), float(center_lat))
-    return bytes(b)
 
 
 def build_annotate_filenames_centerlines_only(display_names: Sequence[str]) -> bytes:
@@ -569,8 +541,6 @@ def build_dmt_bytes(
         annotate_active_filenames_size = len(
             ole.openstream(_STREAM_ANNOTATE_ACTIVE_FILENAMES).read()
         )
-        map2d_state_tpl = ole.openstream(_STREAM_MAP2D_STATE).read()
-        map2d_state2_tpl = ole.openstream(_STREAM_MAP2D_STATE2).read()
 
     coords_list: List[List[Tuple[float, float]]] = [list(line) for line in ordered_lat_lon_lines]
     note = ""
@@ -598,8 +568,6 @@ def build_dmt_bytes(
                 "Could not fit geometry into the DeLorme template after simplification."
             )
 
-    center_lat, center_lon = _bounds_center_lat_lon(coords_list)
-
     _fd, tmp = tempfile.mkstemp(suffix=".dmt")
     os.close(_fd)
     try:
@@ -626,10 +594,9 @@ def build_dmt_bytes(
                 _STREAM_ANNOTATE_ACTIVE_FILENAMES,
                 pad_stream(af_body, annotate_active_filenames_size, pad_byte=0),
             )
-            m1 = _patch_map2d_center(map2d_state_tpl, center_lon, center_lat)
-            m2 = _patch_map2d_center(map2d_state2_tpl, center_lon, center_lat)
-            ole_w.write_stream(_STREAM_MAP2D_STATE, pad_stream(m1, len(map2d_state_tpl)))
-            ole_w.write_stream(_STREAM_MAP2D_STATE2, pad_stream(m2, len(map2d_state2_tpl)))
+            # Do not patch Map2DState: the 54-byte layout is not plain lon/lat floats; writing
+            # float32 there broke the saved view (e.g. zoom to the North Pole). Leave template
+            # map camera as-is; pan/zoom in XMap after open. Geometry is in the draw streams.
         with open(tmp, "rb") as f:
             return f.read(), note
     finally:
