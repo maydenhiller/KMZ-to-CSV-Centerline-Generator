@@ -7,13 +7,18 @@ See: https://github.com/GPSBabel/gpsbabel/blob/gpsbabel_1_7_0/an1.cc
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import os
 import re
 import struct
 import tempfile
+import zlib
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
+
+# Decompressed from template.dmt.zlib on first use (Streamlit Cloud ships zlib, not the 180KB .dmt).
+_materialized_template: Optional[Path] = None
 
 
 def kml_abgr_to_colorref(kml_color: Optional[str]) -> int:
@@ -145,7 +150,55 @@ def sort_cl_stream_names(names: Iterable[str]) -> List[str]:
 
 
 def template_dmt_path() -> Path:
+    """Path to template.dmt if present beside this module (may not exist on cloud)."""
     return Path(__file__).resolve().parent / "template.dmt"
+
+
+def bundled_template_zlib_path() -> Path:
+    return Path(__file__).resolve().parent / "template.dmt.zlib"
+
+
+def resolve_template_dmt_path() -> Path:
+    """
+    Path to a readable DeLorme OLE template for .dmt export.
+
+    1. Uses ``template.dmt`` next to this file when present (local override).
+    2. Otherwise decompresses ``template.dmt.zlib`` once into a temp file (for Streamlit Cloud / slim clones).
+    """
+    global _materialized_template
+
+    base = Path(__file__).resolve().parent
+    plain = base / "template.dmt"
+    if plain.is_file():
+        return plain
+
+    if _materialized_template is not None and _materialized_template.is_file():
+        return _materialized_template
+
+    zpath = bundled_template_zlib_path()
+    if not zpath.is_file():
+        raise FileNotFoundError(
+            "Bundled DeLorme template missing: add `template.dmt` or `template.dmt.zlib` "
+            f"next to the app (expected under {base})."
+        )
+
+    raw = zlib.decompress(zpath.read_bytes())
+    fd, name = tempfile.mkstemp(suffix=".dmt", prefix="kmz_cl_template_")
+    try:
+        os.write(fd, raw)
+    finally:
+        os.close(fd)
+    tmp_path = Path(name)
+    _materialized_template = tmp_path
+
+    def _cleanup(p: Path = tmp_path) -> None:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    atexit.register(_cleanup)
+    return tmp_path
 
 
 def list_annotate_cl_stream_paths(ole) -> List[str]:
