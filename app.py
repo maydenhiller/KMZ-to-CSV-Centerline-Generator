@@ -1,11 +1,18 @@
 import io
 import zipfile
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional, Sequence, Tuple
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
 from lxml import etree
+
+from delorme_streams import (
+    build_dmt_bytes,
+    color_name_for_index,
+    colorref_for_line_index,
+    template_dmt_path,
+)
 
 APP_TITLE = "KMZ/KML to CSV Centerline Generator"
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
@@ -36,7 +43,6 @@ def parse_coordinates_text(coord_text: str) -> List[Tuple[float, float]]:
 
 
 def extract_linestrings(root: etree._Element) -> List[List[Tuple[float, float]]]:
-    """Extract each LineString as its own list of coordinates."""
     lines: List[List[Tuple[float, float]]] = []
     for el in root.findall(".//kml:LineString/kml:coordinates", namespaces=KML_NS):
         if el.text:
@@ -46,20 +52,22 @@ def extract_linestrings(root: etree._Element) -> List[List[Tuple[float, float]]]
     return lines
 
 
-def lines_to_dataframe(lines: List[List[Tuple[float, float]]]) -> pd.DataFrame:
+def lines_to_dataframe(
+    lines: List[List[Tuple[float, float]]],
+    line_colors: Sequence[str],
+) -> pd.DataFrame:
     rows = []
     for idx, coords in enumerate(lines):
+        color = line_colors[idx] if idx < len(line_colors) else "Red"
         for lat, lon in coords:
             rows.append(
                 {
                     "Latitude": lat,
                     "Longitude": lon,
                     "Icon": "none",
-                    "LineStringColor": "Red",
+                    "LineStringColor": color,
                 }
             )
-        # Insert a break row between LineStrings so CSV consumers do not
-        # connect the end of one segment to the start of the next one.
         if idx < len(lines) - 1:
             rows.append(
                 {
@@ -79,7 +87,6 @@ def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
 
 
 def lines_to_txt_bytes(lines: List[List[Tuple[float, float]]]) -> bytes:
-    """TXT export with multiple blocks: Begin Line … End Line for each LineString."""
     buf = io.StringIO()
     for line in lines:
         buf.write("Begin Line\n")
@@ -90,7 +97,7 @@ def lines_to_txt_bytes(lines: List[List[Tuple[float, float]]]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
-def process_upload(uploaded) -> Tuple[pd.DataFrame, List[List[Tuple[float, float]]]]:
+def process_upload(uploaded) -> List[List[Tuple[float, float]]]:
     raw = uploaded.read()
     if uploaded.name.lower().endswith(".kmz"):
         kml_bytes = read_kml_from_kmz(raw)
@@ -102,15 +109,33 @@ def process_upload(uploaded) -> Tuple[pd.DataFrame, List[List[Tuple[float, float
     parser = etree.XMLParser(recover=True)
     root = etree.fromstring(kml_bytes, parser=parser)
     lines = extract_linestrings(root)
-    df = lines_to_dataframe(lines)
-    return df, lines
+    return lines
+
+
+def palette_index_for_line(n: int, center: int, line_index: int) -> int:
+    order = [center] + [i for i in range(n) if i != center]
+    return order.index(line_index)
+
+
+def ordered_lines_for_dmt(
+    lines: List[List[Tuple[float, float]]],
+    centerline_index: int,
+) -> Tuple[List[List[Tuple[float, float]]], List[int]]:
+    """DeLorme streams are filled with the primary centerline first (red), then the rest."""
+    n = len(lines)
+    order = [centerline_index] + [i for i in range(n) if i != centerline_index]
+    ordered = [lines[i] for i in order]
+    colorrefs = [colorref_for_line_index(j) for j in range(n)]
+    return ordered, colorrefs
 
 
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="centered")
     st.title(APP_TITLE)
     st.caption(
-        "Upload one or more KMZ/KML files. The app will extract LineString coordinates and export them as CSV and TXT."
+        "Upload one or more KMZ/KML files. The app extracts LineString coordinates, "
+        "exports CSV and TXT, and can build a combined DeLorme transfer (.dmt) when "
+        f"`template.dmt` is present next to the app (see project folder)."
     )
 
     uploads = st.file_uploader(
@@ -122,32 +147,90 @@ def main():
         st.info("Awaiting file upload.")
         return
 
+    per_file: List[Tuple[str, str, int, int, List[List[Tuple[float, float]]]]] = []
+    all_lines: List[List[Tuple[float, float]]] = []
+    file_ranges: List[Tuple[str, int, int]] = []
+
+    for uploaded in uploads:
+        base_name = Path(uploaded.name).stem
+        try:
+            lines = process_upload(uploaded)
+        except Exception as e:
+            st.error(f"Error processing `{uploaded.name}`: {e}")
+            continue
+        if not lines:
+            st.warning(f"No LineString geometries found in `{uploaded.name}`.")
+            continue
+        start = len(all_lines)
+        all_lines.extend(lines)
+        end = len(all_lines)
+        file_ranges.append((base_name, start, end))
+        per_file.append((uploaded.name, base_name, start, end, lines))
+
+    if not all_lines:
+        st.info("No valid LineString data found.")
+        return
+
+    n_lines = len(all_lines)
+    if n_lines == 1:
+        center_idx = 0
+    else:
+        labels: List[str] = []
+        for base, a, b in file_ranges:
+            for i in range(a, b):
+                k = i - a + 1
+                labels.append(f"{i + 1}: {base} — LineString {k}")
+        center_idx = st.selectbox(
+            "Which LineString is your primary centerline? (It will be drawn red in exports.)",
+            options=list(range(n_lines)),
+            format_func=lambda j: labels[j],
+            key="center_idx",
+        )
+
+    ordered, colorrefs = ordered_lines_for_dmt(all_lines, center_idx)
+
+    tpl = template_dmt_path()
+    dmt_bytes: Optional[bytes] = None
+    if n_lines == 1:
+        dmt_filename = f"{file_ranges[0][0]}.dmt"
+    else:
+        dmt_filename = "Our CL and adjacent CLs.dmt"
+
+    if tpl.is_file():
+        try:
+            dmt_bytes = build_dmt_bytes(tpl, ordered, colorrefs)
+        except Exception as e:
+            st.warning(f"Could not build .dmt (template issue): {e}")
+    else:
+        st.info(
+            f"Optional: add a DeLorme `template.dmt` beside the app at `{tpl}` "
+            "to enable combined .dmt export. The repo includes a sample you can copy."
+        )
+
     zip_buffer = io.BytesIO()
     processed_any = False
 
     with zipfile.ZipFile(zip_buffer, "w") as zf:
-        for uploaded in uploads:
-            base_name = Path(uploaded.name).stem
+        for original_name, base_name, start, end, lines in per_file:
             csv_name = f"{base_name} CL.csv"
             txt_name = f"{base_name} CL.txt"
 
-            try:
-                df, lines = process_upload(uploaded)
-            except Exception as e:
-                st.error(f"Error processing `{uploaded.name}`: {e}")
-                continue
+            local_colors = [
+                color_name_for_index(palette_index_for_line(n_lines, center_idx, gi))
+                for gi in range(start, end)
+            ]
 
-            if df.empty:
-                st.warning(f"No LineString geometries found in `{uploaded.name}`.")
-                continue
-
+            df = lines_to_dataframe(lines, local_colors)
             processed_any = True
 
-            with st.expander(f"Preview: {uploaded.name}", expanded=(len(uploads) == 1)):
+            with st.expander(f"Preview: {original_name}", expanded=(len(per_file) == 1)):
                 st.dataframe(df, use_container_width=True)
 
             zf.writestr(csv_name, dataframe_to_csv_bytes(df))
             zf.writestr(txt_name, lines_to_txt_bytes(lines))
+
+        if dmt_bytes:
+            zf.writestr(dmt_filename, dmt_bytes)
 
     if not processed_any:
         st.info("No valid LineString data found to export.")
@@ -155,7 +238,9 @@ def main():
 
     zip_buffer.seek(0)
     st.download_button(
-        label="Download CSV + TXT (zipped)",
+        label="Download CSV + TXT"
+        + (" + DMT" if dmt_bytes else "")
+        + " (zipped)",
         data=zip_buffer,
         file_name="Centerline_Files.zip",
         mime="application/zip",
@@ -164,4 +249,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
