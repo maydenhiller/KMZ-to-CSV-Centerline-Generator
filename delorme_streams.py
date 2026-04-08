@@ -460,8 +460,9 @@ def build_annotate_filenames_centerlines_only(display_names: Sequence[str]) -> b
         s = name.encode("ascii")
         parts.append(struct.pack("<II", kind, len(s)))
         parts.append(s)
-    # Trailing dword observed in template streams (value 1).
-    parts.append(struct.pack("<I", 1))
+    # Do not append a trailing dword: in practice it is read as an extra (kind=1,len=0) layer
+    # entry and can confuse DeLorme’s annotate list. The buffer is padded with 0x00 to
+    # the fixed stream size (terminates with kind=0,len=0).
     return b"".join(parts)
 
 
@@ -584,14 +585,16 @@ def build_dmt_bytes(
             display_names = [stream_path_str(sp).split("/")[-1] for sp in stream_paths]
             fn_body = build_annotate_filenames_centerlines_only(display_names)
             af_body = build_annotate_active_filenames(display_names[0])
-            # Pad layer-list streams with spaces so trailing bytes are not mistaken for extra records.
+            # MUST pad with 0x00, not spaces: after the trailing ``01 00 00 00`` footer, ``0x20``
+            # bytes read as ``len=32`` (little-endian), so XMap sees a bogus extra “layer” of
+            # spaces and can show **no** embedded lines. Nulls parse as ``kind=0,len=0`` / end.
             ole_w.write_stream(
                 _STREAM_ANNOTATE_FILENAMES,
-                pad_stream(fn_body, annotate_filenames_size, pad_byte=0x20),
+                pad_stream(fn_body, annotate_filenames_size, pad_byte=0),
             )
             ole_w.write_stream(
                 _STREAM_ANNOTATE_ACTIVE_FILENAMES,
-                pad_stream(af_body, annotate_active_filenames_size, pad_byte=0x20),
+                pad_stream(af_body, annotate_active_filenames_size, pad_byte=0),
             )
         with open(tmp, "rb") as f:
             return f.read(), note
