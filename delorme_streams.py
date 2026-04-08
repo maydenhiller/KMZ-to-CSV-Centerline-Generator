@@ -6,7 +6,8 @@ mapping tools. You cannot build one from lat/lon alone; this module starts from
 a minimal blank DeLorme shell (``template.dmt`` beside this file, or embedded in this module) and writes your
 LineString geometry into it.
 
-Coordinate encoding matches GPSBabel’s DeLorme .an1 EncodeOrd / DecodeOrd.
+Coordinate encoding matches GPSBabel’s DeLorme .an1 EncodeOrd / DecodeOrd
+(line vertices: ``lat = EncodeOrd(latitude)``, ``lon = EncodeOrd(-longitude)``).
 See: https://github.com/GPSBabel/gpsbabel/blob/gpsbabel_1_7_0/an1.cc
 """
 
@@ -240,7 +241,8 @@ def build_annotate_line_stream(
 
     parts: List[bytes] = [bytes(header)]
     for i, (lat, lon) in enumerate(coords_lat_lon):
-        lon_i = encode_ord_deg(lon)
+        # Matches GPSBabel an1.cc line vertices: lat = EncodeOrd(lat), lon = EncodeOrd(-lon).
+        lon_i = encode_ord_deg(-lon)
         lat_i = encode_ord_deg(lat)
         pair = struct.pack("<II", lon_i, lat_i)
         if i == 0:
@@ -252,7 +254,7 @@ def build_annotate_line_stream(
     return b"".join(parts)
 
 
-def pad_stream(data: bytes, target_len: int) -> bytes:
+def pad_stream(data: bytes, target_len: int, pad_byte: int = 0) -> bytes:
     if len(data) > target_len:
         raise ValueError(
             f"Encoded line ({len(data)} bytes) exceeds template stream size ({target_len} bytes). "
@@ -260,7 +262,8 @@ def pad_stream(data: bytes, target_len: int) -> bytes:
         )
     if len(data) == target_len:
         return data
-    return data + b"\x00" * (target_len - len(data))
+    pb = pad_byte & 0xFF
+    return data + bytes([pb]) * (target_len - len(data))
 
 
 def max_vertices_for_stream_size(stream_size: int) -> int:
@@ -578,13 +581,14 @@ def build_dmt_bytes(
             display_names = [stream_path_str(sp).split("/")[-1] for sp in stream_paths]
             fn_body = build_annotate_filenames_centerlines_only(display_names)
             af_body = build_annotate_active_filenames(display_names[0])
+            # Pad layer-list streams with spaces so trailing bytes are not mistaken for extra records.
             ole_w.write_stream(
                 _STREAM_ANNOTATE_FILENAMES,
-                pad_stream(fn_body, annotate_filenames_size),
+                pad_stream(fn_body, annotate_filenames_size, pad_byte=0x20),
             )
             ole_w.write_stream(
                 _STREAM_ANNOTATE_ACTIVE_FILENAMES,
-                pad_stream(af_body, annotate_active_filenames_size),
+                pad_stream(af_body, annotate_active_filenames_size, pad_byte=0x20),
             )
         with open(tmp, "rb") as f:
             return f.read(), note
