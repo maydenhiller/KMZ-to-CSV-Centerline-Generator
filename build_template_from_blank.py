@@ -10,6 +10,13 @@ Run from the repo root::
 Edits ``template.dmt`` in place: expands Annotate.Filenames / ActiveFilenames buffers and
 adds empty centerline draw streams (``Our CL CL (2)``, ``Other CL N CL (2)``) at a fixed
 byte size so the app can replace geometry with olefile.
+
+Afterward, refresh the copy baked into ``delorme_streams.py``::
+
+    python _gen_embed.py
+
+Then paste ``_embed_chunk.py`` over the ``_TEMPLATE_ZLIB_B64 = ( ... )`` block in
+``delorme_streams.py`` (or skip if you only use a sidecar ``template.dmt``).
 """
 
 from __future__ import annotations
