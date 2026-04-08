@@ -1,7 +1,7 @@
 import io
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -9,13 +9,20 @@ from lxml import etree
 
 from delorme_streams import (
     build_dmt_bytes,
-    color_name_for_index,
-    colorref_for_line_index,
+    kml_abgr_to_colorref,
+    kml_abgr_to_hex_display,
     template_dmt_path,
 )
 
 APP_TITLE = "KMZ/KML to CSV Centerline Generator"
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
+KML_URI = "http://www.opengis.net/kml/2.2"
+KML = f"{{{KML_URI}}}"
+
+
+def local_tag(el: etree._Element) -> str:
+    t = el.tag
+    return t.split("}")[-1] if "}" in t else t
 
 
 def read_kml_from_kmz(kmz_bytes: bytes) -> Optional[bytes]:
@@ -42,14 +49,115 @@ def parse_coordinates_text(coord_text: str) -> List[Tuple[float, float]]:
     return coords
 
 
-def extract_linestrings(root: etree._Element) -> List[List[Tuple[float, float]]]:
+def _styleurl_to_id(styleurl: str) -> str:
+    return styleurl.strip().split("#")[-1].split("/")[-1]
+
+
+def _linestyle_color_from_style_element(style_el: etree._Element) -> Optional[str]:
+    ls = style_el.find(f"{KML}LineStyle")
+    if ls is None:
+        return None
+    c = ls.find(f"{KML}color")
+    if c is not None and c.text and c.text.strip():
+        return c.text.strip()
+    return None
+
+
+def collect_style_colors(root: etree._Element) -> Dict[str, str]:
+    """Map style id -> KML aabbggrr color string (two passes so StyleMap can reference any Style)."""
+    out: Dict[str, str] = {}
+    for el in root.iter():
+        if local_tag(el) != "Style":
+            continue
+        sid = el.get("id")
+        if not sid:
+            continue
+        col = _linestyle_color_from_style_element(el)
+        if col:
+            out[sid] = col
+    for el in root.iter():
+        if local_tag(el) != "StyleMap":
+            continue
+        sid = el.get("id")
+        if not sid:
+            continue
+        for pair in el.findall(f"{KML}Pair"):
+            key_el = pair.find(f"{KML}key")
+            if key_el is None or (key_el.text or "").strip() != "normal":
+                continue
+            su = pair.find(f"{KML}styleUrl")
+            if su is None or not su.text:
+                continue
+            ref = _styleurl_to_id(su.text)
+            if ref in out:
+                out[sid] = out[ref]
+            break
+    return out
+
+
+def ancestor_placemark(el: Optional[etree._Element]) -> Optional[etree._Element]:
+    e = el
+    while e is not None:
+        if local_tag(e) == "Placemark":
+            return e
+        e = e.getparent()
+    return None
+
+
+def effective_kml_color_for_linestring(
+    linestring_el: etree._Element,
+    style_colors: Dict[str, str],
+) -> str:
+    """Resolve KML LineStyle color (aabbggrr); default opaque white."""
+    default = "ffffffff"
+    pm = ancestor_placemark(linestring_el)
+    if pm is None:
+        return default
+
+    for child in pm:
+        if local_tag(child) == "Style":
+            col = _linestyle_color_from_style_element(child)
+            if col:
+                return col
+
+    su = pm.find(f"{KML}styleUrl")
+    if su is not None and su.text:
+        ref = _styleurl_to_id(su.text)
+        if ref in style_colors:
+            return style_colors[ref]
+
+    e = pm.getparent()
+    while e is not None:
+        if local_tag(e) in ("Folder", "Document"):
+            su = e.find(f"{KML}styleUrl")
+            if su is not None and su.text:
+                ref = _styleurl_to_id(su.text)
+                if ref in style_colors:
+                    return style_colors[ref]
+        e = e.getparent()
+
+    return default
+
+
+def extract_linestrings_with_colors(
+    root: etree._Element,
+) -> Tuple[List[List[Tuple[float, float]]], List[str]]:
+    style_colors = collect_style_colors(root)
     lines: List[List[Tuple[float, float]]] = []
-    for el in root.findall(".//kml:LineString/kml:coordinates", namespaces=KML_NS):
-        if el.text:
-            coords = parse_coordinates_text(el.text)
-            if coords:
-                lines.append(coords)
-    return lines
+    colors: List[str] = []
+    for coord_el in root.findall(".//kml:LineString/kml:coordinates", namespaces=KML_NS):
+        if not coord_el.text:
+            continue
+        coords = parse_coordinates_text(coord_el.text)
+        if not coords:
+            continue
+        ls = coord_el.getparent()
+        if ls is None:
+            continue
+        kml_abgr = effective_kml_color_for_linestring(ls, style_colors)
+        lines.append(coords)
+        colors.append(kml_abgr)
+    return lines, colors
 
 
 def lines_to_dataframe(
@@ -58,7 +166,7 @@ def lines_to_dataframe(
 ) -> pd.DataFrame:
     rows = []
     for idx, coords in enumerate(lines):
-        color = line_colors[idx] if idx < len(line_colors) else "Red"
+        color = line_colors[idx] if idx < len(line_colors) else "#FFFFFF"
         for lat, lon in coords:
             rows.append(
                 {
@@ -97,7 +205,7 @@ def lines_to_txt_bytes(lines: List[List[Tuple[float, float]]]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
-def process_upload(uploaded) -> List[List[Tuple[float, float]]]:
+def process_upload(uploaded) -> Tuple[List[List[Tuple[float, float]]], List[str]]:
     raw = uploaded.read()
     if uploaded.name.lower().endswith(".kmz"):
         kml_bytes = read_kml_from_kmz(raw)
@@ -108,34 +216,17 @@ def process_upload(uploaded) -> List[List[Tuple[float, float]]]:
 
     parser = etree.XMLParser(recover=True)
     root = etree.fromstring(kml_bytes, parser=parser)
-    lines = extract_linestrings(root)
-    return lines
-
-
-def palette_index_for_line(n: int, center: int, line_index: int) -> int:
-    order = [center] + [i for i in range(n) if i != center]
-    return order.index(line_index)
-
-
-def ordered_lines_for_dmt(
-    lines: List[List[Tuple[float, float]]],
-    centerline_index: int,
-) -> Tuple[List[List[Tuple[float, float]]], List[int]]:
-    """DeLorme streams are filled with the primary centerline first (red), then the rest."""
-    n = len(lines)
-    order = [centerline_index] + [i for i in range(n) if i != centerline_index]
-    ordered = [lines[i] for i in order]
-    colorrefs = [colorref_for_line_index(j) for j in range(n)]
-    return ordered, colorrefs
+    lines, kml_abgr_colors = extract_linestrings_with_colors(root)
+    return lines, kml_abgr_colors
 
 
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="centered")
     st.title(APP_TITLE)
     st.caption(
-        "Upload one or more KMZ/KML files. The app extracts LineString coordinates, "
-        "exports CSV and TXT, and can build a combined DeLorme transfer (.dmt) when "
-        f"`template.dmt` is present next to the app (see project folder)."
+        "Upload one or more KMZ/KML files. LineString coordinates and line colors from the file "
+        "(LineStyle / styleUrl) are exported to CSV and TXT; a combined DeLorme .dmt is added when "
+        "`template.dmt` is available beside the app."
     )
 
     uploads = st.file_uploader(
@@ -147,14 +238,14 @@ def main():
         st.info("Awaiting file upload.")
         return
 
-    per_file: List[Tuple[str, str, int, int, List[List[Tuple[float, float]]]]] = []
+    per_file: List[Tuple[str, str, int, int, List[List[Tuple[float, float]]], List[str]]] = []
     all_lines: List[List[Tuple[float, float]]] = []
-    file_ranges: List[Tuple[str, int, int]] = []
+    all_kml_abgr: List[str] = []
 
     for uploaded in uploads:
         base_name = Path(uploaded.name).stem
         try:
-            lines = process_upload(uploaded)
+            lines, kml_abgr = process_upload(uploaded)
         except Exception as e:
             st.error(f"Error processing `{uploaded.name}`: {e}")
             continue
@@ -163,64 +254,43 @@ def main():
             continue
         start = len(all_lines)
         all_lines.extend(lines)
+        all_kml_abgr.extend(kml_abgr)
         end = len(all_lines)
-        file_ranges.append((base_name, start, end))
-        per_file.append((uploaded.name, base_name, start, end, lines))
+        per_file.append((uploaded.name, base_name, start, end, lines, kml_abgr))
 
     if not all_lines:
         st.info("No valid LineString data found.")
         return
 
-    n_lines = len(all_lines)
-    if n_lines == 1:
-        center_idx = 0
-    else:
-        labels: List[str] = []
-        for base, a, b in file_ranges:
-            for i in range(a, b):
-                k = i - a + 1
-                labels.append(f"{i + 1}: {base} — LineString {k}")
-        center_idx = st.selectbox(
-            "Which LineString is your primary centerline? (It will be drawn red in exports.)",
-            options=list(range(n_lines)),
-            format_func=lambda j: labels[j],
-            key="center_idx",
-        )
+    colorrefs = [kml_abgr_to_colorref(c) for c in all_kml_abgr]
 
-    ordered, colorrefs = ordered_lines_for_dmt(all_lines, center_idx)
-
-    tpl = template_dmt_path()
-    dmt_bytes: Optional[bytes] = None
     if n_lines == 1:
-        dmt_filename = f"{file_ranges[0][0]}.dmt"
+        dmt_filename = f"{per_file[0][1]}.dmt"
     else:
         dmt_filename = "Our CL and adjacent CLs.dmt"
 
+    tpl = template_dmt_path()
+    dmt_bytes: Optional[bytes] = None
     if tpl.is_file():
         try:
-            dmt_bytes = build_dmt_bytes(tpl, ordered, colorrefs)
+            dmt_bytes = build_dmt_bytes(tpl, all_lines, colorrefs)
         except Exception as e:
-            st.warning(f"Could not build .dmt (template issue): {e}")
+            st.warning(f"Could not build .dmt: {e}")
     else:
         st.info(
-            f"Optional: add a DeLorme `template.dmt` beside the app at `{tpl}` "
-            "to enable combined .dmt export. The repo includes a sample you can copy."
+            f"Add `template.dmt` next to the app (expected at `{tpl}`) to include a combined .dmt in the zip."
         )
 
     zip_buffer = io.BytesIO()
     processed_any = False
 
     with zipfile.ZipFile(zip_buffer, "w") as zf:
-        for original_name, base_name, start, end, lines in per_file:
+        for original_name, base_name, _start, _end, lines, kml_abgr in per_file:
             csv_name = f"{base_name} CL.csv"
             txt_name = f"{base_name} CL.txt"
 
-            local_colors = [
-                color_name_for_index(palette_index_for_line(n_lines, center_idx, gi))
-                for gi in range(start, end)
-            ]
-
-            df = lines_to_dataframe(lines, local_colors)
+            hex_colors = [kml_abgr_to_hex_display(c) for c in kml_abgr]
+            df = lines_to_dataframe(lines, hex_colors)
             processed_any = True
 
             with st.expander(f"Preview: {original_name}", expanded=(len(per_file) == 1)):
@@ -238,9 +308,7 @@ def main():
 
     zip_buffer.seek(0)
     st.download_button(
-        label="Download CSV + TXT"
-        + (" + DMT" if dmt_bytes else "")
-        + " (zipped)",
+        label="Download CSV + TXT" + (" + DMT" if dmt_bytes else "") + " (zipped)",
         data=zip_buffer,
         file_name="Centerline_Files.zip",
         mime="application/zip",
