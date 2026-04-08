@@ -20,6 +20,7 @@ import re
 import struct
 import tempfile
 import zlib
+import itertools
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
@@ -729,6 +730,78 @@ def pad_stream(data: bytes, target_len: int) -> bytes:
     return data + b"\x00" * (target_len - len(data))
 
 
+def max_vertices_for_stream_size(stream_size: int) -> int:
+    """How many lat/lon points fit in a draw stream of this byte size (header + vertices + terminator)."""
+    # build_annotate_line_stream: 96 + 16 * (n_points + 1) + 3  (terminator block + tail)
+    avail = stream_size - 96 - 3
+    if avail < 32:
+        return 0
+    blocks = avail // 16
+    return max(0, blocks - 1)
+
+
+def uniform_sample_coords(
+    coords: Sequence[Tuple[float, float]], max_points: int
+) -> List[Tuple[float, float]]:
+    """Reduce vertex count while keeping first/last and spreading samples along the polyline."""
+    if len(coords) <= max_points:
+        return list(coords)
+    if max_points < 2:
+        return [coords[0], coords[-1]]
+    n = len(coords)
+    idx = [round(i * (n - 1) / (max_points - 1)) for i in range(max_points)]
+    out: List[Tuple[float, float]] = []
+    for i in idx:
+        p = coords[i]
+        if not out or p != out[-1]:
+            out.append(p)
+    return out
+
+
+def _find_stream_permutation(
+    coords_list: List[List[Tuple[float, float]]],
+    colorrefs: Sequence[int],
+    headers: Sequence[bytes],
+    sizes: Sequence[int],
+) -> Optional[Tuple[int, ...]]:
+    """
+    Return permutation p where stream slot j gets user line index p[j], or None if impossible.
+    Tries all permutations for n <= 8; otherwise one greedy: longest lines to largest streams.
+    """
+    n = len(coords_list)
+    if n == 0:
+        return ()
+
+    def fits(perm: Tuple[int, ...]) -> bool:
+        for j in range(n):
+            u = perm[j]
+            ln = len(build_annotate_line_stream(coords_list[u], colorrefs[u], headers[j]))
+            if ln > sizes[j]:
+                return False
+        return True
+
+    if n <= 8:
+        best: Optional[Tuple[int, ...]] = None
+        best_score: Optional[int] = None
+        for perm in itertools.permutations(range(n)):
+            if not fits(perm):
+                continue
+            # Prefer assignment closest to upload order (line i → stream i).
+            score = sum(abs(perm[j] - j) for j in range(n))
+            if best_score is None or score < best_score:
+                best_score = score
+                best = perm
+        return best
+
+    stream_order = sorted(range(n), key=lambda j: sizes[j], reverse=True)
+    line_order = sorted(range(n), key=lambda i: len(coords_list[i]), reverse=True)
+    perm_slots = [0] * n
+    for rank in range(n):
+        perm_slots[stream_order[rank]] = line_order[rank]
+    perm = tuple(perm_slots)
+    return perm if fits(perm) else None
+
+
 _CL_RE = re.compile(r"^(.+) CL \(2\)$")
 
 
@@ -837,11 +910,18 @@ def build_dmt_bytes(
     template_path: Path,
     ordered_lat_lon_lines: Sequence[Sequence[Tuple[float, float]]],
     colorrefs: Sequence[int],
-) -> bytes:
+) -> Tuple[bytes, str]:
     """
-    Clone template_path OLE file and replace draw line streams in sort order
-    (Our CL first, then Other CL 1, …) with encoded geometry. Streams are padded
-    with zeros to match existing stream sizes.
+    Clone template_path OLE file and replace draw line streams with encoded geometry.
+
+    Lines are matched to template streams by **permutation**: the longest polyline is
+    written to the largest stream slot when needed, so order in the KMZ zip may differ
+    from Our CL / Other CL stream names in the .dmt.
+
+    If no assignment fits, vertices are **uniformly subsampled** along each line until
+    everything fits (see returned note string).
+
+    Returns ``(file_bytes, note)`` where ``note`` is non-empty if subsampling occurred.
     """
     import os
     import shutil
@@ -852,15 +932,17 @@ def build_dmt_bytes(
     if len(ordered_lat_lon_lines) != len(colorrefs):
         raise ValueError("Each line must have a color.")
 
+    n = len(ordered_lat_lon_lines)
+
     with olefile.OleFileIO(str(template_path)) as ole:
         stream_paths = list_annotate_cl_stream_paths(ole)
-        if len(stream_paths) < len(ordered_lat_lon_lines):
+        if len(stream_paths) < n:
             raise ValueError(
                 f"Template has {len(stream_paths)} draw line stream(s), but "
-                f"{len(ordered_lat_lon_lines)} line(s) were produced. "
+                f"{n} line(s) were produced. "
                 "Add empty draw objects in XMap and save a larger template, or merge lines."
             )
-        stream_paths = stream_paths[: len(ordered_lat_lon_lines)]
+        stream_paths = stream_paths[:n]
         headers = []
         sizes = []
         for sp in stream_paths:
@@ -868,19 +950,44 @@ def build_dmt_bytes(
             sizes.append(len(data))
             headers.append(data[:96])
 
+    coords_list: List[List[Tuple[float, float]]] = [list(line) for line in ordered_lat_lon_lines]
+    note = ""
+    attempts = 0
+    while True:
+        perm = _find_stream_permutation(coords_list, colorrefs, headers, sizes)
+        if perm is not None:
+            break
+        u = max(range(n), key=lambda i: len(coords_list[i]))
+        if len(coords_list[u]) <= 2:
+            raise ValueError(
+                "Cannot fit these lines into the DeLorme template (streams too small). "
+                "Use a custom template.dmt with larger draw objects, or fewer/shorter lines."
+            )
+        new_n = max(2, (len(coords_list[u]) * 2) // 3)
+        coords_list[u] = uniform_sample_coords(coords_list[u], new_n)
+        attempts += 1
+        if attempts == 1:
+            note = (
+                "Some lines were simplified (fewer vertices) so they fit the built-in "
+                "DeLorme template size limits."
+            )
+        if attempts > 300:
+            raise ValueError(
+                "Could not fit geometry into the DeLorme template after simplification."
+            )
+
     _fd, tmp = tempfile.mkstemp(suffix=".dmt")
     os.close(_fd)
     try:
         shutil.copyfile(str(template_path), tmp)
         with olefile.OleFileIO(tmp, write_mode=True) as ole_w:
-            for sp, coords, cref, hdr, sz in zip(
-                stream_paths, ordered_lat_lon_lines, colorrefs, headers, sizes
-            ):
-                payload = build_annotate_line_stream(coords, cref, hdr)
-                padded = pad_stream(payload, sz)
-                ole_w.write_stream(sp, padded)
+            for j in range(n):
+                u = perm[j]
+                payload = build_annotate_line_stream(coords_list[u], colorrefs[u], headers[j])
+                padded = pad_stream(payload, sizes[j])
+                ole_w.write_stream(stream_paths[j], padded)
         with open(tmp, "rb") as f:
-            return f.read()
+            return f.read(), note
     finally:
         try:
             os.unlink(tmp)
