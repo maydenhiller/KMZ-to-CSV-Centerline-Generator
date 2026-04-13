@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-dmt-first-vertex-00-spacer-v16"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-annotate-paths-match-zip-an1-v17"
 
 # If True (default), ``Annotate.Filenames`` / ``ActiveFilenames`` include full
 # ``C:\\DeLorme Docs\\Draw\\<name>.an1`` path strings. **DeLorme Street Atlas 2015** (and
@@ -639,6 +639,7 @@ def build_annotate_filenames_centerlines_only(
     display_names: Sequence[str],
     *,
     link_external_path: Optional[bool] = None,
+    external_an1_basenames: Optional[Sequence[str]] = None,
 ) -> bytes:
     """
     Binary body for ``Annotate.Filenames``: only in-document centerline layers.
@@ -650,19 +651,33 @@ def build_annotate_filenames_centerlines_only(
     This builder writes only those pairs for the given stream names.
 
     ``link_external_path`` defaults to :data:`DMT_LINK_EXTERNAL_DRAW_PATHS`.
+
+    ``external_an1_basenames``: optional, same length as ``display_names``. Each entry is a
+    filename only (e.g. ``Our CL.an1``) placed under ``C:\\DeLorme Docs\\Draw\\``. When set,
+    path records match the zip export names so Street Atlas finds the same files if the user
+    copies them beside the template paths. If omitted, paths use the OLE leaf name (e.g.
+    ``Our CL CL (2).an1``), which usually does **not** match per-KMZ ``*.an1`` names in the zip.
     """
     if link_external_path is None:
         link_external_path = DMT_LINK_EXTERNAL_DRAW_PATHS
     n = len(display_names)
     if n == 0:
         raise ValueError("Need at least one centerline display name.")
+    if external_an1_basenames is not None and len(external_an1_basenames) != n:
+        raise ValueError("external_an1_basenames must match display_names length.")
     kinds = _annotate_filename_type_codes(n * 2)
     parts: List[bytes] = []
     for i, name in enumerate(display_names):
         kind_path = kinds[i * 2]
         kind_name = kinds[i * 2 + 1]
         if link_external_path:
-            p = _default_draw_an1_path(name).encode("ascii")
+            if external_an1_basenames is not None:
+                leaf = external_an1_basenames[i]
+                if "\\" in leaf or "/" in leaf:
+                    raise ValueError("external_an1_basenames entries must be filenames only.")
+                p = rf"C:\DeLorme Docs\Draw\{leaf}".encode("ascii")
+            else:
+                p = _default_draw_an1_path(name).encode("ascii")
         else:
             p = b""
         s = name.encode("ascii")
@@ -685,6 +700,14 @@ def build_annotate_active_filenames(active_display_name: str) -> bytes:
     ``C:\\DeLorme Docs\\Draw\\<name>.an1``.
     """
     p = _default_draw_an1_path(active_display_name).encode("ascii")
+    return struct.pack("<II", 1, len(p)) + p
+
+
+def build_annotate_active_filenames_from_an1_basename(an1_basename: str) -> bytes:
+    """Like :func:`build_annotate_active_filenames` but uses a concrete ``*.an1`` filename."""
+    if "\\" in an1_basename or "/" in an1_basename:
+        raise ValueError("an1_basename must be a filename only.")
+    p = rf"C:\DeLorme Docs\Draw\{an1_basename}".encode("ascii")
     return struct.pack("<II", 1, len(p)) + p
 
 
@@ -732,6 +755,7 @@ def build_dmt_bytes(
     colorrefs: Sequence[int],
     *,
     centerline_txt_bytes: Optional[bytes] = None,
+    line_export_an1_basenames: Optional[Sequence[str]] = None,
 ) -> Tuple[bytes, str]:
     """
     Clone template_path OLE file and replace draw line streams with encoded geometry.
@@ -752,6 +776,11 @@ def build_dmt_bytes(
     ``DeLormeComponents/DeLorme.Annotate.Workspace/Centerline.txt`` in the **same**
     OleWriter pass as the geometry. A second save pass can corrupt the compound file and
     leave XMap showing a blank map.
+
+    ``line_export_an1_basenames``: optional, one filename per line in ``ordered_lat_lon_lines``
+    (e.g. ``Our CL.an1`` from the zip). When set, ``Annotate.Filenames`` / active path records
+    use these names under ``C:\\DeLorme Docs\\Draw\\`` so they match copied zip files. The
+    embedded OLE stream leaf names (e.g. ``Our CL CL (2)``) are unchanged.
     """
     import os
     import shutil
@@ -763,6 +792,8 @@ def build_dmt_bytes(
         raise ValueError("Each line must have a color.")
 
     n = len(ordered_lat_lon_lines)
+    if line_export_an1_basenames is not None and len(line_export_an1_basenames) != n:
+        raise ValueError("line_export_an1_basenames must have one entry per line.")
 
     with olefile.OleFileIO(str(template_path)) as ole:
         template_stream_paths = list_annotate_cl_stream_paths(ole)
@@ -822,9 +853,20 @@ def build_dmt_bytes(
     # not the extra streams. ``Annotate.Filenames`` must reference the same leaf names as
     # those OLE streams (``C:\\DeLorme Docs\\Draw\\<leaf>.an1`` + ``<leaf>`` pairs).
     display_names = [_annotate_workspace_leaf_name(p) for p in template_stream_paths]
-    fn_body = build_annotate_filenames_centerlines_only(display_names)
+    slot_external_basenames: Optional[List[str]] = None
+    if line_export_an1_basenames is not None:
+        slot_external_basenames = [line_export_an1_basenames[perm[j]] for j in range(n)]
+    fn_body = build_annotate_filenames_centerlines_only(
+        display_names,
+        external_an1_basenames=slot_external_basenames,
+    )
     if DMT_LINK_EXTERNAL_DRAW_PATHS:
-        af_body = build_annotate_active_filenames(display_names[0])
+        if line_export_an1_basenames is not None:
+            af_body = build_annotate_active_filenames_from_an1_basename(
+                line_export_an1_basenames[perm[0]]
+            )
+        else:
+            af_body = build_annotate_active_filenames(display_names[0])
     else:
         af_body = build_annotate_active_stream_name(display_names[0])
     fn_padded = pad_stream(fn_body, annotate_filenames_size, pad_byte=0)
