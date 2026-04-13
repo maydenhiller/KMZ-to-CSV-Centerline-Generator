@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-dmt-header-from-working-street-atlas-v15"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-first-vertex-00-spacer-v16"
 
 # If True (default), ``Annotate.Filenames`` / ``ActiveFilenames`` include full
 # ``C:\\DeLorme Docs\\Draw\\<name>.an1`` path strings. **DeLorme Street Atlas 2015** (and
@@ -323,13 +323,16 @@ def dmt_stream_bytes_from_an1(an1_bytes: bytes) -> bytes:
 
 def _dmt_draw_stream_payload_len(num_points: int) -> int:
     """
-    Byte length of one DeLorme draw-object stream payload.
+    Byte length of one DeLorme draw-object stream payload for ``build_annotate_line_stream``.
 
-    This matches ``build_annotate_line_stream`` (XMap’s annotate polyline layout). It is the
-    same length as ``dmt_stream_bytes_from_an1(build_an1_bytes(...))`` but the **binary
-    layout differs** — only the annotate-stream form renders inside a ``.dmt``.
+    Street Atlas / DeLorme use a **0x00 spacer** after the first 8-byte segment prefix before
+    the first lon/lat pair (17 bytes for vertex 0); remaining vertices are 16 bytes
+    (``PREFIX_MID`` + pair).
     """
-    return len(_DMT_AN1_STREAM_WRAPPER) + 95 + 16 * num_points + len(_AN1_FILE_FOOTER_16)
+    if num_points < 2:
+        # Header + terminator only (not a valid polyline payload).
+        return 96 + len(PREFIX_TERM) + len(TAIL3)
+    return 96 + 17 + (num_points - 1) * 16 + len(PREFIX_TERM) + len(TAIL3)
 
 
 def _wrapped_an1_dmt_stream_len(num_points: int) -> int:
@@ -365,7 +368,10 @@ def build_annotate_line_stream(
         lat_i = encode_ord_deg(lat)
         pair = struct.pack("<II", lon_i, lat_i)
         if i == 0:
-            parts.append(PREFIX_FIRST + pair)
+            # Working Street Atlas 2015 saves use a 0x00 byte between ``PREFIX_FIRST`` and the
+            # first lon/lat (see user reference ``Our CL CL (2)`` stream); omitting it matches
+            # generated output at byte 104 and breaks rendering.
+            parts.append(PREFIX_FIRST + b"\x00" + pair)
         else:
             parts.append(PREFIX_MID + pair)
     parts.append(PREFIX_TERM)
@@ -387,10 +393,12 @@ def pad_stream(data: bytes, target_len: int, pad_byte: int = 0) -> bytes:
 
 def max_vertices_for_stream_size(stream_size: int) -> int:
     """How many lat/lon points fit in a draw stream of this byte size (annotate layout)."""
-    avail = stream_size - _dmt_draw_stream_payload_len(0)
-    if avail < 16:
+    overhead = 96 + len(PREFIX_TERM) + len(TAIL3)
+    avail = stream_size - overhead
+    if avail < 17:
         return 0
-    return max(0, avail // 16)
+    # First vertex uses 17 bytes; each additional vertex uses 16 bytes.
+    return 1 + (avail - 17) // 16
 
 
 def uniform_sample_coords(
