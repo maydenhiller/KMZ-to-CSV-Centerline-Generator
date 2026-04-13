@@ -30,7 +30,13 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-dmt-annotate-stream-layout-v11"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-embedded-annotate-no-copy-v13"
+
+# If True, ``Annotate.Filenames`` / ``ActiveFilenames`` reference ``C:\\DeLorme Docs\\Draw\\…``
+# (legacy; some XMap builds may expect matching files on disk — **not** automated).
+# If False (default), external path length is **0** and only embedded OLE stream names are
+# listed so the .dmt does not depend on copying .an1 files into the Draw folder.
+DMT_LINK_EXTERNAL_DRAW_PATHS = False
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -618,16 +624,24 @@ def _default_draw_an1_path(display_name: str) -> str:
     return rf"C:\DeLorme Docs\Draw\{safe}.an1"
 
 
-def build_annotate_filenames_centerlines_only(display_names: Sequence[str]) -> bytes:
+def build_annotate_filenames_centerlines_only(
+    display_names: Sequence[str],
+    *,
+    link_external_path: Optional[bool] = None,
+) -> bytes:
     """
     Binary body for ``Annotate.Filenames``: only in-document centerline layers.
 
     XMap expects draw layers to be listed as **pairs** of records:
-    - kind=1, bytes = ``C:\\DeLorme Docs\\Draw\\<name>.an1``
+    - kind=1, bytes = ``C:\\DeLorme Docs\\Draw\\<name>.an1`` **or** length 0 (embedded only)
     - kind=1, bytes = ``<name>`` (the embedded OLE stream name)
 
     This builder writes only those pairs for the given stream names.
+
+    ``link_external_path`` defaults to :data:`DMT_LINK_EXTERNAL_DRAW_PATHS`.
     """
+    if link_external_path is None:
+        link_external_path = DMT_LINK_EXTERNAL_DRAW_PATHS
     n = len(display_names)
     if n == 0:
         raise ValueError("Need at least one centerline display name.")
@@ -636,7 +650,10 @@ def build_annotate_filenames_centerlines_only(display_names: Sequence[str]) -> b
     for i, name in enumerate(display_names):
         kind_path = kinds[i * 2]
         kind_name = kinds[i * 2 + 1]
-        p = _default_draw_an1_path(name).encode("ascii")
+        if link_external_path:
+            p = _default_draw_an1_path(name).encode("ascii")
+        else:
+            p = b""
         s = name.encode("ascii")
         parts.append(struct.pack("<II", kind_path, len(p)))
         parts.append(p)
@@ -651,12 +668,22 @@ def build_annotate_filenames_centerlines_only(display_names: Sequence[str]) -> b
 def build_annotate_active_filenames(active_display_name: str) -> bytes:
     """
     Binary body for ``Annotate.ActiveFilenames``: points at the active layer’s
-    external draw path (even when geometry is embedded).
+    external draw path.
 
-    Matches ``Example.dmt``: kind=1, bytes = ``C:\\DeLorme Docs\\Draw\\<name>.an1``.
+    Matches ``Example.dmt`` when using linked paths: kind=1, bytes =
+    ``C:\\DeLorme Docs\\Draw\\<name>.an1``.
     """
     p = _default_draw_an1_path(active_display_name).encode("ascii")
     return struct.pack("<II", 1, len(p)) + p
+
+
+def build_annotate_active_stream_name(active_display_name: str) -> bytes:
+    """
+    ``Annotate.ActiveFilenames`` when draw layers are **embedded only** (no ``C:\\`` path):
+    kind=1, bytes = stream leaf name (e.g. ``Our CL CL (2)``).
+    """
+    s = active_display_name.encode("ascii")
+    return struct.pack("<II", 1, len(s)) + s
 
 
 def _ole_stream_path_to_parts(stream_path: str) -> List[str]:
@@ -705,7 +732,10 @@ def build_dmt_bytes(
     If no assignment fits, vertices are **uniformly subsampled** along each line until
     everything fits (see returned note string).
 
-    Returns ``(file_bytes, note)`` where ``note`` is non-empty if subsampling occurred.
+    Returns ``(file_bytes, note)``. ``note`` is non-empty if subsampling occurred.
+
+    Annotate path records follow :data:`DMT_LINK_EXTERNAL_DRAW_PATHS` (default: embedded-only,
+    no disk paths — **no manual file copying**).
 
     If ``centerline_txt_bytes`` is set, it is embedded as
     ``DeLormeComponents/DeLorme.Annotate.Workspace/Centerline.txt`` in the **same**
@@ -782,7 +812,10 @@ def build_dmt_bytes(
     # those OLE streams (``C:\\DeLorme Docs\\Draw\\<leaf>.an1`` + ``<leaf>`` pairs).
     display_names = [_annotate_workspace_leaf_name(p) for p in template_stream_paths]
     fn_body = build_annotate_filenames_centerlines_only(display_names)
-    af_body = build_annotate_active_filenames(display_names[0])
+    if DMT_LINK_EXTERNAL_DRAW_PATHS:
+        af_body = build_annotate_active_filenames(display_names[0])
+    else:
+        af_body = build_annotate_active_stream_name(display_names[0])
     fn_padded = pad_stream(fn_body, annotate_filenames_size, pad_byte=0)
     af_padded = pad_stream(af_body, annotate_active_filenames_size, pad_byte=0)
     line_payloads: List[bytes] = []
