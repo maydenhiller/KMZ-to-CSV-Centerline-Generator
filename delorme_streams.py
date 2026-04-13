@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-dmt-annotate-paths-for-street-atlas-v14"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-header-from-working-street-atlas-v15"
 
 # If True (default), ``Annotate.Filenames`` / ``ActiveFilenames`` include full
 # ``C:\\DeLorme Docs\\Draw\\<name>.an1`` path strings. **DeLorme Street Atlas 2015** (and
@@ -234,14 +234,13 @@ PREFIX_MID = bytes.fromhex("6f00000100000000")
 PREFIX_TERM = bytes.fromhex("6f000004000000000000000300000000")
 TAIL3 = bytes.fromhex("000000")
 
-# First 96 bytes of a **real** XMap Annotate polyline stream (DeLorme .dmt). The dev
-# ``template.dmt`` used a placeholder header (``cf01…``) that encodes valid-looking
-# GPSBabel vertices but **does not render** in XMap. Always build line payloads from
-# this header (captured from a working ``Centerline68`` stream).
+# First 96 bytes of a **real** DeLorme Street Atlas / XMap annotate polyline OLE stream.
+# Captured from a **working** user project (``Our CL CL (2)`` stream in a saved .dmt).
+# Older builds used ``bf420700…`` (GPSBabel-style); **Street Atlas USA 2015** matches the
+# ``cf010000…`` layout below — using the wrong header yields empty Draw lists / blank maps.
+# One continuous hex string (192 chars = 96 bytes) — do not split; easy to truncate by mistake.
 ANNOTATE_LINE_HEADER96 = bytes.fromhex(
-    "bf420700252d0000000000000200000000000200010000000f000041379b00000000000002000200000017"
-    "0000010000000000c0e3dc6900000000cfe3dc6900000000040000000000ff0000000300000000000000"
-    "0000000000000000020025"
+    "cf010000252d0000000000000200000000000200010000000b0000412827000000000000020002000000170000010000000000fcb1c16900000000fcb1c16900000000040000000000ff00000003000000000000000000000000000000020016"
 )
 
 # DeLorme ``.an1`` draw file (GPSBabel-compatible), captured from a real XMap export
