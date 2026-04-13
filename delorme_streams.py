@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-dmt-overwrite-template-draw-streams-v10"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-annotate-stream-layout-v11"
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -312,9 +312,20 @@ def dmt_stream_bytes_from_an1(an1_bytes: bytes) -> bytes:
     return _DMT_AN1_STREAM_WRAPPER + an1_bytes
 
 
-def _wrapped_an1_dmt_stream_len(num_points: int) -> int:
-    """OLE stream size for one embedded ``.an1`` line."""
+def _dmt_draw_stream_payload_len(num_points: int) -> int:
+    """
+    Byte length of one DeLorme draw-object stream payload.
+
+    This matches ``build_annotate_line_stream`` (XMap’s annotate polyline layout). It is the
+    same length as ``dmt_stream_bytes_from_an1(build_an1_bytes(...))`` but the **binary
+    layout differs** — only the annotate-stream form renders inside a ``.dmt``.
+    """
     return len(_DMT_AN1_STREAM_WRAPPER) + 95 + 16 * num_points + len(_AN1_FILE_FOOTER_16)
+
+
+def _wrapped_an1_dmt_stream_len(num_points: int) -> int:
+    """Deprecated alias for :func:`_dmt_draw_stream_payload_len`."""
+    return _dmt_draw_stream_payload_len(num_points)
 
 
 def build_annotate_line_stream(
@@ -366,8 +377,8 @@ def pad_stream(data: bytes, target_len: int, pad_byte: int = 0) -> bytes:
 
 
 def max_vertices_for_stream_size(stream_size: int) -> int:
-    """How many lat/lon points fit in an embedded ``.an1`` stream of this byte size."""
-    avail = stream_size - _wrapped_an1_dmt_stream_len(0)
+    """How many lat/lon points fit in a draw stream of this byte size (annotate layout)."""
+    avail = stream_size - _dmt_draw_stream_payload_len(0)
     if avail < 16:
         return 0
     return max(0, avail // 16)
@@ -407,7 +418,7 @@ def _find_stream_permutation(
     def fits(perm: Tuple[int, ...]) -> bool:
         for j in range(n):
             u = perm[j]
-            ln = _wrapped_an1_dmt_stream_len(len(coords_list[u]))
+            ln = _dmt_draw_stream_payload_len(len(coords_list[u]))
             if ln > sizes[j]:
                 return False
         return True
@@ -777,8 +788,15 @@ def build_dmt_bytes(
     line_payloads: List[bytes] = []
     for j in range(n):
         u = perm[j]
-        an1 = build_an1_bytes(coords_list[u], colorrefs[u])
-        payload = dmt_stream_bytes_from_an1(an1)
+        # Must use the **annotate polyline stream** layout (``build_annotate_line_stream``),
+        # not a wrapped standalone ``.an1`` file. XMap reads OLE streams using the same
+        # binary shape as ``ANNOTATE_LINE_HEADER96`` + segment prefixes; a full GPSBabel
+        # ``.an1`` disk image inside the slot does not draw.
+        payload = build_annotate_line_stream(
+            coords_list[u],
+            int(colorrefs[u]) & 0xFFFFFFFF,
+            ANNOTATE_LINE_HEADER96,
+        )
         line_payloads.append(pad_stream(payload, sizes[j]))
 
     # Prefer extract-msg OleWriter (same family as the template build script): rebuilding the
