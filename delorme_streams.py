@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-olewriter-dmt-v4-singlepass"
+DMT_EXPORT_BUILD_ID = "20260413-olewriter-dmt-v5-xmap-header96"
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -223,6 +223,16 @@ PREFIX_FIRST = bytes.fromhex("0000000100000000")
 PREFIX_MID = bytes.fromhex("6f00000100000000")
 PREFIX_TERM = bytes.fromhex("6f000004000000000000000300000000")
 TAIL3 = bytes.fromhex("000000")
+
+# First 96 bytes of a **real** XMap Annotate polyline stream (DeLorme .dmt). The dev
+# ``template.dmt`` used a placeholder header (``cf01…``) that encodes valid-looking
+# GPSBabel vertices but **does not render** in XMap. Always build line payloads from
+# this header (captured from a working ``Centerline68`` stream).
+ANNOTATE_LINE_HEADER96 = bytes.fromhex(
+    "bf420700252d0000000000000200000000000200010000000f000041379b00000000000002000200000017"
+    "0000010000000000c0e3dc6900000000cfe3dc6900000000040000000000ff0000000300000000000000"
+    "0000000000000000020025"
+)
 
 
 def build_annotate_line_stream(
@@ -606,12 +616,10 @@ def build_dmt_bytes(
                 "Add empty draw objects in XMap and save a larger template, or merge lines."
             )
         stream_paths = stream_paths[:n]
-        headers = []
         sizes = []
         for sp in stream_paths:
             data = ole.openstream(sp).read()
             sizes.append(len(data))
-            headers.append(data[:96])
         annotate_filenames_size = len(ole.openstream(_STREAM_ANNOTATE_FILENAMES).read())
         annotate_active_filenames_size = len(
             ole.openstream(_STREAM_ANNOTATE_ACTIVE_FILENAMES).read()
@@ -621,7 +629,9 @@ def build_dmt_bytes(
     note = ""
     attempts = 0
     while True:
-        perm = _find_stream_permutation(coords_list, colorrefs, headers, sizes)
+        perm = _find_stream_permutation(
+            coords_list, colorrefs, [ANNOTATE_LINE_HEADER96] * n, sizes
+        )
         if perm is not None:
             break
         u = max(range(n), key=lambda i: len(coords_list[i]))
@@ -651,7 +661,9 @@ def build_dmt_bytes(
     line_payloads: List[bytes] = []
     for j in range(n):
         u = perm[j]
-        payload = build_annotate_line_stream(coords_list[u], colorrefs[u], headers[j])
+        payload = build_annotate_line_stream(
+            coords_list[u], colorrefs[u], ANNOTATE_LINE_HEADER96
+        )
         line_payloads.append(pad_stream(payload, sizes[j]))
 
     # Prefer extract-msg OleWriter (same family as the template build script): rebuilding the
