@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-dmt-embedded-default-no-copy-v18"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-length-prefix-inner-header91-v19"
 
 # If False (default), ``Annotate.Filenames`` uses **empty** external path strings and
 # ``Annotate.ActiveFilenames`` points at the embedded stream leaf name. Geometry lives only
@@ -233,14 +233,15 @@ PREFIX_MID = bytes.fromhex("6f00000100000000")
 PREFIX_TERM = bytes.fromhex("6f000004000000000000000300000000")
 TAIL3 = bytes.fromhex("000000")
 
-# First 96 bytes of a **real** DeLorme Street Atlas / XMap annotate polyline OLE stream.
-# Captured from a **working** user project (``Our CL CL (2)`` stream in a saved .dmt).
-# Older builds used ``bf420700…`` (GPSBabel-style); **Street Atlas USA 2015** matches the
-# ``cf010000…`` layout below — using the wrong header yields empty Draw lists / blank maps.
-# One continuous hex string (192 chars = 96 bytes) — do not split; easy to truncate by mistake.
-ANNOTATE_LINE_HEADER96 = bytes.fromhex(
-    "cf010000252d0000000000000200000000000200010000000b0000412827000000000000020002000000170000010000000000fcb1c16900000000fcb1c16900000000040000000000ff00000003000000000000000000000000000000020016"
+# **Inner** header (92 bytes) after the leading length dword, from a working Street Atlas USA 2015
+# ``Our CL CL (2)`` stream (user reference project). Bytes ``[4:96]`` of that stream.
+# First stream dword = ``len(stream) - 4``. Vertex count at offset **91**; COLORREF at **72**.
+ANNOTATE_LINE_HEADER92 = bytes.fromhex(
+    "252d0000000000000200000000000200010000000b0000412827000000000000020002000000170000010000000000fcb1c16900000000fcb1c16900000000040000000000ff00000003000000000000000000000000000000020016"
 )
+
+# Back-compat alias — was mis-sized at 96 bytes; real Street Atlas streams use 92 bytes here.
+ANNOTATE_LINE_HEADER96 = ANNOTATE_LINE_HEADER92
 
 # DeLorme ``.an1`` draw file (GPSBabel-compatible), captured from a real XMap export
 # (``10406 centerline.an1`` + matching ``10406 centerline.txt``). ``build_an1_bytes`` matches
@@ -320,18 +321,19 @@ def dmt_stream_bytes_from_an1(an1_bytes: bytes) -> bytes:
     return _DMT_AN1_STREAM_WRAPPER + an1_bytes
 
 
+def _annotate_inner_header_len() -> int:
+    return len(ANNOTATE_LINE_HEADER92)
+
+
 def _dmt_draw_stream_payload_len(num_points: int) -> int:
     """
-    Byte length of one DeLorme draw-object stream payload for ``build_annotate_line_stream``.
-
-    Street Atlas / DeLorme use a **0x00 spacer** after the first 8-byte segment prefix before
-    the first lon/lat pair (17 bytes for vertex 0); remaining vertices are 16 bytes
-    (``PREFIX_MID`` + pair).
+    Total byte length of one draw stream: **4** (length dword) + **92**-byte inner header +
+    ``num_points`` × **16** bytes per vertex (incl. first) + terminator + tail.
     """
+    ih = _annotate_inner_header_len()
     if num_points < 2:
-        # Header + terminator only (not a valid polyline payload).
-        return 96 + len(PREFIX_TERM) + len(TAIL3)
-    return 96 + 17 + (num_points - 1) * 16 + len(PREFIX_TERM) + len(TAIL3)
+        return 4 + ih + len(PREFIX_TERM) + len(TAIL3)
+    return 4 + ih + num_points * 16 + len(PREFIX_TERM) + len(TAIL3)
 
 
 def _wrapped_an1_dmt_stream_len(num_points: int) -> int:
@@ -346,19 +348,24 @@ def build_annotate_line_stream(
 ) -> bytes:
     """
     coords: (latitude, longitude) in WGS84 degrees.
-    header_template: first 96 bytes copied from an existing DeLorme stream of the same layout.
+    header_template: inner header (92 bytes for Street Atlas 2015; older templates may pad to 96).
     """
     if not coords_lat_lon:
         raise ValueError("No coordinates for line stream.")
-    if len(header_template) < 96:
-        raise ValueError("Header template must be at least 96 bytes.")
+    ih = min(len(header_template), _annotate_inner_header_len())
+    if ih < _annotate_inner_header_len():
+        raise ValueError(
+            f"Header template must be at least {_annotate_inner_header_len()} bytes "
+            "(Street Atlas 2015 annotate inner header)."
+        )
 
-    header = bytearray(header_template[:96])
-    # COLORREF little-endian at offset 72
+    header = bytearray(header_template[: _annotate_inner_header_len()])
+    # COLORREF little-endian at offset 72 (inner header).
     struct.pack_into("<I", header, 72, colorref & 0xFFFFFFFF)
     n = len(coords_lat_lon)
     if n < 256:
-        header[95] = n
+        # Working Street Atlas 2015 streams store vertex count at offset 91 (see user reference .dmt).
+        header[91] = n
 
     parts: List[bytes] = [bytes(header)]
     for i, (lat, lon) in enumerate(coords_lat_lon):
@@ -367,15 +374,16 @@ def build_annotate_line_stream(
         lat_i = encode_ord_deg(lat)
         pair = struct.pack("<II", lon_i, lat_i)
         if i == 0:
-            # Working Street Atlas 2015 saves use a 0x00 byte between ``PREFIX_FIRST`` and the
-            # first lon/lat (see user reference ``Our CL CL (2)`` stream); omitting it matches
-            # generated output at byte 104 and breaks rendering.
-            parts.append(PREFIX_FIRST + b"\x00" + pair)
+            # Reference ``Our CL CL (2)`` (Street Atlas 2015): first point is **16** bytes:
+            # ``PREFIX_FIRST`` + lon/lat — no spacer byte (verified against user project bytes).
+            parts.append(PREFIX_FIRST + pair)
         else:
             parts.append(PREFIX_MID + pair)
     parts.append(PREFIX_TERM)
     parts.append(TAIL3)
-    return b"".join(parts)
+    after_len = b"".join(parts)
+    # First dword = number of bytes following it (matches Garmin / DeLorme reference exports).
+    return struct.pack("<I", len(after_len)) + after_len
 
 
 def pad_stream(data: bytes, target_len: int, pad_byte: int = 0) -> bytes:
@@ -392,12 +400,11 @@ def pad_stream(data: bytes, target_len: int, pad_byte: int = 0) -> bytes:
 
 def max_vertices_for_stream_size(stream_size: int) -> int:
     """How many lat/lon points fit in a draw stream of this byte size (annotate layout)."""
-    overhead = 96 + len(PREFIX_TERM) + len(TAIL3)
+    overhead = 4 + _annotate_inner_header_len() + len(PREFIX_TERM) + len(TAIL3)
     avail = stream_size - overhead
-    if avail < 17:
+    if avail < 16:
         return 0
-    # First vertex uses 17 bytes; each additional vertex uses 16 bytes.
-    return 1 + (avail - 17) // 16
+    return avail // 16
 
 
 def uniform_sample_coords(
@@ -880,7 +887,9 @@ def build_dmt_bytes(
             int(colorrefs[u]) & 0xFFFFFFFF,
             ANNOTATE_LINE_HEADER96,
         )
-        line_payloads.append(pad_stream(payload, sizes[j]))
+        # Reference Street Atlas projects use **compact** stream sizes (no 64K padding).
+        # Padding after the logical terminator can prevent the map from drawing lines.
+        line_payloads.append(payload)
 
     # Prefer extract-msg OleWriter (same family as the template build script): rebuilding the
     # compound document tends to open reliably in XMap. olefile's in-place write_stream can
