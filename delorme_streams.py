@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-olewriter-dmt-v7-centerline-streamnames"
+DMT_EXPORT_BUILD_ID = "20260413-olewriter-dmt-v8-an1-native"
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -234,6 +234,53 @@ ANNOTATE_LINE_HEADER96 = bytes.fromhex(
     "0000000000000000020025"
 )
 
+# DeLorme ``.an1`` draw file (GPSBabel-compatible), captured from a real XMap export
+# (``10406 centerline.an1`` + matching ``10406 centerline.txt``). ``build_an1_bytes`` matches
+# that file byte-for-byte for the same coordinates and color.
+_AN1_LINE_PREFIX_95 = bytes.fromhex(
+    "252d000000000000020000000000020001000000130000414b2b00000000000002000200000017000001"
+    "00000000006099e668000000006099e668000000000200000000008000ff000300000000000000000000"
+    "0000000000020052020000"
+)
+_AN1_FILE_FOOTER_16 = bytes.fromhex("04000000000000000300000000000000")
+# Embedded annotate stream = this 4-byte wrapper + raw ``.an1`` bytes (see ``Example.dmt``).
+_DMT_AN1_STREAM_WRAPPER = bytes.fromhex("bf420700")
+
+
+def build_an1_bytes(
+    coords_lat_lon: Sequence[Tuple[float, float]],
+    colorref: int,
+) -> bytes:
+    """
+    Build a standalone DeLorme ``.an1`` drawing file (one polyline).
+
+    Vertex encoding matches GPSBabel ``an1.cc`` / ``EncodeOrd`` (lon = EncodeOrd(-lon),
+    lat = EncodeOrd(lat)).
+    """
+    if not coords_lat_lon:
+        raise ValueError("No coordinates for .an1.")
+    n = len(coords_lat_lon)
+    prefix = bytearray(_AN1_LINE_PREFIX_95)
+    struct.pack_into("<I", prefix, 69, int(colorref) & 0xFFFFFFFF)
+    struct.pack_into("<I", prefix, 91, n)
+    parts: List[bytes] = [bytes(prefix)]
+    for lat, lon in coords_lat_lon:
+        lon_i = encode_ord_deg(-lon)
+        lat_i = encode_ord_deg(lat)
+        parts.append(struct.pack("<hiiih", 1, 0, lon_i, lat_i, 0))
+    parts.append(_AN1_FILE_FOOTER_16)
+    return b"".join(parts)
+
+
+def dmt_stream_bytes_from_an1(an1_bytes: bytes) -> bytes:
+    """OLE stream payload for a draw layer: 4-byte prefix + ``.an1`` file bytes."""
+    return _DMT_AN1_STREAM_WRAPPER + an1_bytes
+
+
+def _wrapped_an1_dmt_stream_len(num_points: int) -> int:
+    """OLE stream size for one embedded ``.an1`` line."""
+    return len(_DMT_AN1_STREAM_WRAPPER) + 95 + 16 * num_points + len(_AN1_FILE_FOOTER_16)
+
 
 def build_annotate_line_stream(
     coords_lat_lon: Sequence[Tuple[float, float]],
@@ -284,13 +331,11 @@ def pad_stream(data: bytes, target_len: int, pad_byte: int = 0) -> bytes:
 
 
 def max_vertices_for_stream_size(stream_size: int) -> int:
-    """How many lat/lon points fit in a draw stream of this byte size (header + vertices + terminator)."""
-    # build_annotate_line_stream: 96 + 16 * (n_points + 1) + 3  (terminator block + tail)
-    avail = stream_size - 96 - 3
-    if avail < 32:
+    """How many lat/lon points fit in an embedded ``.an1`` stream of this byte size."""
+    avail = stream_size - _wrapped_an1_dmt_stream_len(0)
+    if avail < 16:
         return 0
-    blocks = avail // 16
-    return max(0, blocks - 1)
+    return max(0, avail // 16)
 
 
 def uniform_sample_coords(
@@ -314,7 +359,6 @@ def uniform_sample_coords(
 def _find_stream_permutation(
     coords_list: List[List[Tuple[float, float]]],
     colorrefs: Sequence[int],
-    headers: Sequence[bytes],
     sizes: Sequence[int],
 ) -> Optional[Tuple[int, ...]]:
     """
@@ -328,7 +372,7 @@ def _find_stream_permutation(
     def fits(perm: Tuple[int, ...]) -> bool:
         for j in range(n):
             u = perm[j]
-            ln = len(build_annotate_line_stream(coords_list[u], colorrefs[u], headers[j]))
+            ln = _wrapped_an1_dmt_stream_len(len(coords_list[u]))
             if ln > sizes[j]:
                 return False
         return True
@@ -650,9 +694,7 @@ def build_dmt_bytes(
     note = ""
     attempts = 0
     while True:
-        perm = _find_stream_permutation(
-            coords_list, colorrefs, [ANNOTATE_LINE_HEADER96] * n, sizes
-        )
+        perm = _find_stream_permutation(coords_list, colorrefs, sizes)
         if perm is not None:
             break
         u = max(range(n), key=lambda i: len(coords_list[i]))
@@ -685,9 +727,8 @@ def build_dmt_bytes(
     line_payloads: List[bytes] = []
     for j in range(n):
         u = perm[j]
-        payload = build_annotate_line_stream(
-            coords_list[u], colorrefs[u], ANNOTATE_LINE_HEADER96
-        )
+        an1 = build_an1_bytes(coords_list[u], colorrefs[u])
+        payload = dmt_stream_bytes_from_an1(an1)
         line_payloads.append(pad_stream(payload, sizes[j]))
 
     # Prefer extract-msg OleWriter (same family as the template build script): rebuilding the
