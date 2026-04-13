@@ -247,6 +247,29 @@ _AN1_FILE_FOOTER_16 = bytes.fromhex("04000000000000000300000000000000")
 _DMT_AN1_STREAM_WRAPPER = bytes.fromhex("bf420700")
 
 
+def _lat_lon_pairs_only(
+    coords_lat_lon: Sequence[Tuple[float, float]],
+) -> List[Tuple[float, float]]:
+    """
+    KML / upstream data sometimes carries (lat, lon, alt) or longer tuples.
+    ``for lat, lon in ...`` then raises ``ValueError: too many values to unpack``.
+    """
+    out: List[Tuple[float, float]] = []
+    for p in coords_lat_lon:
+        if p is None:
+            continue
+        try:
+            it = list(p) if not isinstance(p, (tuple, list)) else p
+            if len(it) < 2:
+                continue
+            lat = float(it[0])
+            lon = float(it[1])
+            out.append((lat, lon))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def build_an1_bytes(
     coords_lat_lon: Sequence[Tuple[float, float]],
     colorref: int,
@@ -257,14 +280,15 @@ def build_an1_bytes(
     Vertex encoding matches GPSBabel ``an1.cc`` / ``EncodeOrd`` (lon = EncodeOrd(-lon),
     lat = EncodeOrd(lat)).
     """
-    if not coords_lat_lon:
-        raise ValueError("No coordinates for .an1.")
-    n = len(coords_lat_lon)
+    pts = _lat_lon_pairs_only(coords_lat_lon)
+    if len(pts) < 2:
+        raise ValueError("Need at least two (latitude, longitude) points for .an1 export.")
+    n = len(pts)
     prefix = bytearray(_AN1_LINE_PREFIX_95)
     struct.pack_into("<I", prefix, 69, int(colorref) & 0xFFFFFFFF)
     struct.pack_into("<I", prefix, 91, n)
     parts: List[bytes] = [bytes(prefix)]
-    for lat, lon in coords_lat_lon:
+    for lat, lon in pts:
         lon_i = encode_ord_deg(-lon)
         lat_i = encode_ord_deg(lat)
         parts.append(struct.pack("<hiiih", 1, 0, lon_i, lat_i, 0))
@@ -690,7 +714,15 @@ def build_dmt_bytes(
             ole.openstream(_STREAM_ANNOTATE_ACTIVE_FILENAMES).read()
         )
 
-    coords_list: List[List[Tuple[float, float]]] = [list(line) for line in ordered_lat_lon_lines]
+    coords_list: List[List[Tuple[float, float]]] = [
+        _lat_lon_pairs_only(list(line)) for line in ordered_lat_lon_lines
+    ]
+    for i, c in enumerate(coords_list):
+        if len(c) < 2:
+            raise ValueError(
+                f"Line {i + 1} needs at least two valid latitude/longitude points "
+                "(check for bad coordinates in the KMZ/KML)."
+            )
     note = ""
     attempts = 0
     while True:
