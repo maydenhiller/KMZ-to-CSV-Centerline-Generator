@@ -9,6 +9,7 @@ from lxml import etree
 
 from delorme_streams import (
     DMT_EXPORT_BUILD_ID,
+    build_an1_bytes,
     build_dmt_bytes,
     kml_abgr_to_colorref,
     kml_abgr_to_hex_display,
@@ -372,6 +373,8 @@ The generated **.dmt** encodes the same geometry/colors and also stashes a copy 
 
             zf.writestr(csv_name, dataframe_to_csv_bytes(df))
             zf.writestr(txt_name, lines_to_txt_bytes(lines))
+            cref0 = kml_abgr_to_colorref(kml_abgr[0] if kml_abgr else None)
+            zf.writestr(f"{base_name}.an1", build_an1_bytes(lines, cref0))
 
         if len(all_lines) > 0:
             zf.writestr(
@@ -387,6 +390,8 @@ The generated **.dmt** encodes the same geometry/colors and also stashes a copy 
                 "_EXPORT_BUILD_INFO.txt",
                 (
                     f"dmt_export_build={DMT_EXPORT_BUILD_ID}\n"
+                    "Per-file ``*.an1`` files are native DeLorme draw layers (copy into "
+                    "C:\\DeLorme Docs\\Draw\\ or open from XMap). "
                     "Per-file and combined TXT are for Draw→Import (same format as your manual workflow). "
                     "A copy of the combined TXT is also embedded in the .dmt as "
                     "DeLormeComponents/DeLorme.Annotate.Workspace/Centerline.txt. "
@@ -400,7 +405,7 @@ The generated **.dmt** encodes the same geometry/colors and also stashes a copy 
 
     zip_buffer.seek(0)
     st.download_button(
-        label="Download CSV + TXT" + (" + DMT" if dmt_bytes else "") + " (zipped)",
+        label="Download CSV + TXT + AN1" + (" + DMT" if dmt_bytes else "") + " (zipped)",
         data=zip_buffer,
         file_name="Centerline_Files.zip",
         mime="application/zip",
