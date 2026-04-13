@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-olewriter-dmt-v8-an1-native"
+DMT_EXPORT_BUILD_ID = "20260413-an1-one-linestring-per-file-v9"
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -280,6 +280,17 @@ def build_an1_bytes(
     Vertex encoding matches GPSBabel ``an1.cc`` / ``EncodeOrd`` (lon = EncodeOrd(-lon),
     lat = EncodeOrd(lat)).
     """
+    if coords_lat_lon:
+        a0 = coords_lat_lon[0]
+        if isinstance(a0, (list, tuple)) and len(a0) >= 2:
+            try:
+                float(a0[0])
+            except TypeError as exc:
+                raise ValueError(
+                    "build_an1_bytes expects one LineString as [(lat, lon), ...], "
+                    "not a list of polylines [[(lat, lon), ...], ...]. "
+                    "Pass a single inner list from your parsed KMZ."
+                ) from exc
     pts = _lat_lon_pairs_only(coords_lat_lon)
     if len(pts) < 2:
         raise ValueError("Need at least two (latitude, longitude) points for .an1 export.")
