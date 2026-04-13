@@ -30,17 +30,16 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-dmt-annotate-paths-match-zip-an1-v17"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-embedded-default-no-copy-v18"
 
-# If True (default), ``Annotate.Filenames`` / ``ActiveFilenames`` include full
-# ``C:\\DeLorme Docs\\Draw\\<name>.an1`` path strings. **DeLorme Street Atlas 2015** (and
-# similar builds) use those records to **populate the Draw layer list**; with path length
-# 0 the list stays empty even when OLE streams contain geometry.
+# If False (default), ``Annotate.Filenames`` uses **empty** external path strings and
+# ``Annotate.ActiveFilenames`` points at the embedded stream leaf name. Geometry lives only
+# in the .dmt OLE streams — **no** ``C:\\DeLorme Docs\\Draw\\`` files are required to open
+# the project (full automation).
 #
-# Geometry is still written into the embedded OLE streams — you often get lines without
-# copying files. If a build still draws nothing, copy the zip’s ``*.an1`` files into
-# ``C:\\DeLorme Docs\\Draw\\`` using the same base names as in the Draw list.
-DMT_LINK_EXTERNAL_DRAW_PATHS = True
+# Set to True only if you intentionally want path records that reference on-disk ``*.an1``
+# files under ``C:\\DeLorme Docs\\Draw\\`` (e.g. sidecar workflows).
+DMT_LINK_EXTERNAL_DRAW_PATHS = False
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -769,18 +768,16 @@ def build_dmt_bytes(
 
     Returns ``(file_bytes, note)``. ``note`` is non-empty if subsampling occurred.
 
-    Annotate path records follow :data:`DMT_LINK_EXTERNAL_DRAW_PATHS` (default: full paths so
-    Street Atlas / XMap **register draw layers** in the UI).
+    Annotate path records follow :data:`DMT_LINK_EXTERNAL_DRAW_PATHS` (default: **False**,
+    embedded-only — no disk paths; open the .dmt as-is).
 
     If ``centerline_txt_bytes`` is set, it is embedded as
     ``DeLormeComponents/DeLorme.Annotate.Workspace/Centerline.txt`` in the **same**
     OleWriter pass as the geometry. A second save pass can corrupt the compound file and
     leave XMap showing a blank map.
 
-    ``line_export_an1_basenames``: optional, one filename per line in ``ordered_lat_lon_lines``
-    (e.g. ``Our CL.an1`` from the zip). When set, ``Annotate.Filenames`` / active path records
-    use these names under ``C:\\DeLorme Docs\\Draw\\`` so they match copied zip files. The
-    embedded OLE stream leaf names (e.g. ``Our CL CL (2)``) are unchanged.
+    ``line_export_an1_basenames``: optional; only used when :data:`DMT_LINK_EXTERNAL_DRAW_PATHS`
+    is True — supplies ``C:\\DeLorme Docs\\Draw\\`` filenames per line. Ignored when embedded.
     """
     import os
     import shutil
