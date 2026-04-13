@@ -373,8 +373,20 @@ The generated **.dmt** encodes the same geometry/colors and also stashes a copy 
 
             zf.writestr(csv_name, dataframe_to_csv_bytes(df))
             zf.writestr(txt_name, lines_to_txt_bytes(lines))
-            cref0 = kml_abgr_to_colorref(kml_abgr[0] if kml_abgr else None)
-            zf.writestr(f"{base_name}.an1", build_an1_bytes(lines, cref0))
+            # One native .an1 per KML LineString (each file holds a single polyline).
+            for li, (line_coords, abgr) in enumerate(zip(lines, kml_abgr), start=1):
+                cref = kml_abgr_to_colorref(abgr)
+                try:
+                    an1_payload = build_an1_bytes(line_coords, cref)
+                except ValueError as exc:
+                    st.warning(f"`{original_name}`: skipped .an1 for line {li}: {exc}")
+                    continue
+                an1_name = (
+                    f"{base_name}.an1"
+                    if len(lines) == 1
+                    else f"{base_name}_line{li}.an1"
+                )
+                zf.writestr(an1_name, an1_payload)
 
         if len(all_lines) > 0:
             zf.writestr(
@@ -390,7 +402,8 @@ The generated **.dmt** encodes the same geometry/colors and also stashes a copy 
                 "_EXPORT_BUILD_INFO.txt",
                 (
                     f"dmt_export_build={DMT_EXPORT_BUILD_ID}\n"
-                    "Per-file ``*.an1`` files are native DeLorme draw layers (copy into "
+                    "Per-file ``*.an1`` / ``*_lineN.an1`` files are native DeLorme draw layers "
+                    "(one .an1 per KML LineString; copy into "
                     "C:\\DeLorme Docs\\Draw\\ or open from XMap). "
                     "Per-file and combined TXT are for Draw→Import (same format as your manual workflow). "
                     "A copy of the combined TXT is also embedded in the .dmt as "
