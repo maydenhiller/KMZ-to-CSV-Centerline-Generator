@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260409-olewriter-dmt-v3"
+DMT_EXPORT_BUILD_ID = "20260413-olewriter-dmt-v4-singlepass"
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -566,6 +566,8 @@ def build_dmt_bytes(
     template_path: Path,
     ordered_lat_lon_lines: Sequence[Sequence[Tuple[float, float]]],
     colorrefs: Sequence[int],
+    *,
+    centerline_txt_bytes: Optional[bytes] = None,
 ) -> Tuple[bytes, str]:
     """
     Clone template_path OLE file and replace draw line streams with encoded geometry.
@@ -578,6 +580,11 @@ def build_dmt_bytes(
     everything fits (see returned note string).
 
     Returns ``(file_bytes, note)`` where ``note`` is non-empty if subsampling occurred.
+
+    If ``centerline_txt_bytes`` is set, it is embedded as
+    ``DeLormeComponents/DeLorme.Annotate.Workspace/Centerline.txt`` in the **same**
+    OleWriter pass as the geometry. A second save pass can corrupt the compound file and
+    leave XMap showing a blank map.
     """
     import os
     import shutil
@@ -666,6 +673,12 @@ def build_dmt_bytes(
             _ole_stream_path_to_parts(_STREAM_ANNOTATE_ACTIVE_FILENAMES),
             data=af_padded,
         )
+        if centerline_txt_bytes is not None:
+            _parts_txt = _ole_stream_path_to_parts(_DEFAULT_EMBED_TXT_STREAM)
+            try:
+                writer.editEntry(_parts_txt, data=centerline_txt_bytes)
+            except Exception:
+                writer.addEntry(_parts_txt, data=centerline_txt_bytes)
         fd, tmp_path = tempfile.mkstemp(suffix=".dmt")
         os.close(fd)
         try:
@@ -684,6 +697,13 @@ def build_dmt_bytes(
             note = "OleWriter failed; used olefile fallback. Install extract-msg for best results."
         else:
             note = note + " OleWriter failed; used olefile fallback."
+    # If we reach here, OleWriter did not return — olefile fallback cannot add Centerline.txt.
+    if centerline_txt_bytes is not None:
+        extra = (
+            " Centerline.txt was not embedded into the .dmt (OleWriter path required). "
+            "Use the TXT files from the zip for Draw→Import."
+        )
+        note = note + extra if note else extra.strip()
 
     _fd, tmp = tempfile.mkstemp(suffix=".dmt")
     os.close(_fd)
