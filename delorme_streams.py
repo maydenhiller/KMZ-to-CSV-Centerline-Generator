@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-olewriter-dmt-v5-xmap-header96"
+DMT_EXPORT_BUILD_ID = "20260413-olewriter-dmt-v6-filenames-an1-pairs"
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -503,33 +503,54 @@ def embed_centerline_txt_stream(
 
 def _annotate_filename_type_codes(n: int) -> List[int]:
     """
-    Per-layer kind dword in ``Annotate.Filenames``. Kind ``6`` is the draw / centerline style
-    used for the template’s primary layer. Using ``1`` / ``0`` for 2nd+ layers matched an old
-    guess; in practice kind ``0`` leaves later centerlines **inactive** in XMap (nothing in the
-    Draw list / map). Use ``6`` for **every** exported layer so all polylines show.
+    Per-record kind dword in ``Annotate.Filenames``.
+
+    A known-good XMap project (see the user-provided ``Example.dmt``) uses kind ``1`` for:
+    - an external Draw path like ``C:\\DeLorme Docs\\Draw\\<name>.an1``
+    - followed by the embedded stream name ``<name>``
+
+    Using other kind values can result in XMap showing a blank map even if the streams
+    are populated.
     """
     if n <= 0:
         return []
-    return [6] * n
+    return [1] * n
+
+
+def _default_draw_an1_path(display_name: str) -> str:
+    """
+    XMap stores draw layers as ``.an1`` under ``C:\\DeLorme Docs\\Draw``.
+
+    We embed streams in the .dmt, but still write the same path records so XMap
+    discovers/activates the draw objects consistently.
+    """
+    safe = display_name
+    return rf"C:\DeLorme Docs\Draw\{safe}.an1"
 
 
 def build_annotate_filenames_centerlines_only(display_names: Sequence[str]) -> bytes:
     """
     Binary body for ``Annotate.Filenames``: only in-document centerline layers.
 
-    The stock template also lists an external ``.an1`` path, Notes, Combined Access,
-    and Final AGMs — those entries make XMap prefer missing files and hide embedded
-    centerlines. This builder lists **only** the given display names (OLE stream
-    leaf titles like ``Our CL CL (2)``).
+    XMap expects draw layers to be listed as **pairs** of records:
+    - kind=1, bytes = ``C:\\DeLorme Docs\\Draw\\<name>.an1``
+    - kind=1, bytes = ``<name>`` (the embedded OLE stream name)
+
+    This builder writes only those pairs for the given stream names.
     """
     n = len(display_names)
     if n == 0:
         raise ValueError("Need at least one centerline display name.")
-    kinds = _annotate_filename_type_codes(n)
+    kinds = _annotate_filename_type_codes(n * 2)
     parts: List[bytes] = []
-    for kind, name in zip(kinds, display_names):
+    for i, name in enumerate(display_names):
+        kind_path = kinds[i * 2]
+        kind_name = kinds[i * 2 + 1]
+        p = _default_draw_an1_path(name).encode("ascii")
         s = name.encode("ascii")
-        parts.append(struct.pack("<II", kind, len(s)))
+        parts.append(struct.pack("<II", kind_path, len(p)))
+        parts.append(p)
+        parts.append(struct.pack("<II", kind_name, len(s)))
         parts.append(s)
     # Do not append a trailing dword: in practice it is read as an extra (kind=1,len=0) layer
     # entry and can confuse DeLorme’s annotate list. The buffer is padded with 0x00 to
@@ -539,13 +560,13 @@ def build_annotate_filenames_centerlines_only(display_names: Sequence[str]) -> b
 
 def build_annotate_active_filenames(active_display_name: str) -> bytes:
     """
-    Binary body for ``Annotate.ActiveFilenames``: active layer is the first centerline.
+    Binary body for ``Annotate.ActiveFilenames``: points at the active layer’s
+    external draw path (even when geometry is embedded).
 
-    Replaces the template default that points at ``C:\\...\\Final AGMs63.an1``, which
-    breaks display when that file does not exist.
+    Matches ``Example.dmt``: kind=1, bytes = ``C:\\DeLorme Docs\\Draw\\<name>.an1``.
     """
-    s = active_display_name.encode("ascii")
-    return struct.pack("<II", 1, len(s)) + s
+    p = _default_draw_an1_path(active_display_name).encode("ascii")
+    return struct.pack("<II", 1, len(p)) + p
 
 
 def _ole_stream_path_to_parts(stream_path: str) -> List[str]:
