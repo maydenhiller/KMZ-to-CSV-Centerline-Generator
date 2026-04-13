@@ -8,7 +8,9 @@ import streamlit as st
 from lxml import etree
 
 from delorme_streams import (
+    DMT_EXPORT_BUILD_ID,
     build_dmt_bytes,
+    embed_centerline_txt_stream,
     kml_abgr_to_colorref,
     kml_abgr_to_hex_display,
     resolve_template_dmt_path,
@@ -283,11 +285,21 @@ def main():
     st.set_page_config(page_title=APP_TITLE, layout="centered")
     st.title(APP_TITLE)
     st.caption(
-        "Upload KMZ/KML files. LineStrings, polygon outlines, and gx:Track paths are read. "
-        "The zip contains **CSV** and **TXT** sidecars (plain text) plus a **.dmt** file: the .dmt is a "
-        "DeLorme map with **draw layers** (not a copy of the TXT inside the .dmt). "
-        "Keep **template.dmt** next to the app (or rely on the built-in shell) for .dmt export."
+        "Exports CSV/TXT per upload plus optional combined TXT and a **best-effort** combined .dmt. "
+        "**Reliable XMap path:** Draw → Import → choose the TXT file(s), Enter — repeat per line if needed, "
+        "then set colors in Draw. The app cannot run XMap for you; .saf / final save steps stay in XMap."
     )
+    with st.expander("Recommended XMap workflow (matches manual import)"):
+        st.markdown(
+            """
+1. Unzip and use **`ALL_CENTERLINES_FOR_XMAP_IMPORT.txt`** (one import for every line) **or** each `* CL.txt` separately.
+2. **Draw → Import** → pick the TXT → **Enter**. Repeat if you used per-file TXTs.
+3. **Draw** → select a line → set **color** (KML colors are in the CSV for reference; TXT import does not carry color).
+4. **Map files → Transfer → Create**, save **.saf**, then **save the .dmt**.
+
+The generated **.dmt** encodes the same geometry/colors and also stashes a copy of the combined TXT *inside* the .dmt as `DeLormeComponents/DeLorme.Annotate.Workspace/Centerline.txt`. If it misbehaves, rely on TXT import + save in XMap (we cannot fully replicate Garmin’s internal project format).
+            """
+        )
 
     uploads = st.file_uploader(
         "Upload KMZ or KML",
@@ -338,6 +350,15 @@ def main():
             st.info(dmt_note)
     except Exception as e:
         st.warning(f"Could not build combined .dmt (DeLorme file): {e}")
+    else:
+        # Store the same TXT you would import in XMap inside the .dmt container
+        # at the same internal location as the draw layers.
+        try:
+            dmt_bytes = embed_centerline_txt_stream(
+                dmt_bytes, lines_to_txt_bytes(all_lines)
+            )
+        except Exception as e:
+            st.warning(f"Built .dmt, but could not embed Centerline.txt inside it: {e}")
 
     zip_buffer = io.BytesIO()
     processed_any = False
@@ -357,8 +378,26 @@ def main():
             zf.writestr(csv_name, dataframe_to_csv_bytes(df))
             zf.writestr(txt_name, lines_to_txt_bytes(lines))
 
+        if len(all_lines) > 0:
+            zf.writestr(
+                "ALL_CENTERLINES_FOR_XMAP_IMPORT.txt",
+                lines_to_txt_bytes(all_lines),
+            )
+
         if dmt_bytes:
             zf.writestr(dmt_filename, dmt_bytes)
+
+        if processed_any:
+            zf.writestr(
+                "_EXPORT_BUILD_INFO.txt",
+                (
+                    f"dmt_export_build={DMT_EXPORT_BUILD_ID}\n"
+                    "Per-file and combined TXT are for Draw→Import (same format as your manual workflow). "
+                    "A copy of the combined TXT is also embedded in the .dmt as "
+                    "DeLormeComponents/DeLorme.Annotate.Workspace/Centerline.txt. "
+                    "Combined TXT = all polylines in KMZ order.\n"
+                ).encode("utf-8"),
+            )
 
     if not processed_any:
         st.info("No valid LineString data found to export.")
