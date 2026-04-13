@@ -30,13 +30,17 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-dmt-embedded-annotate-no-copy-v13"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-annotate-paths-for-street-atlas-v14"
 
-# If True, ``Annotate.Filenames`` / ``ActiveFilenames`` reference ``C:\\DeLorme Docs\\Draw\\…``
-# (legacy; some XMap builds may expect matching files on disk — **not** automated).
-# If False (default), external path length is **0** and only embedded OLE stream names are
-# listed so the .dmt does not depend on copying .an1 files into the Draw folder.
-DMT_LINK_EXTERNAL_DRAW_PATHS = False
+# If True (default), ``Annotate.Filenames`` / ``ActiveFilenames`` include full
+# ``C:\\DeLorme Docs\\Draw\\<name>.an1`` path strings. **DeLorme Street Atlas 2015** (and
+# similar builds) use those records to **populate the Draw layer list**; with path length
+# 0 the list stays empty even when OLE streams contain geometry.
+#
+# Geometry is still written into the embedded OLE streams — you often get lines without
+# copying files. If a build still draws nothing, copy the zip’s ``*.an1`` files into
+# ``C:\\DeLorme Docs\\Draw\\`` using the same base names as in the Draw list.
+DMT_LINK_EXTERNAL_DRAW_PATHS = True
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -734,8 +738,8 @@ def build_dmt_bytes(
 
     Returns ``(file_bytes, note)``. ``note`` is non-empty if subsampling occurred.
 
-    Annotate path records follow :data:`DMT_LINK_EXTERNAL_DRAW_PATHS` (default: embedded-only,
-    no disk paths — **no manual file copying**).
+    Annotate path records follow :data:`DMT_LINK_EXTERNAL_DRAW_PATHS` (default: full paths so
+    Street Atlas / XMap **register draw layers** in the UI).
 
     If ``centerline_txt_bytes`` is set, it is embedded as
     ``DeLormeComponents/DeLorme.Annotate.Workspace/Centerline.txt`` in the **same**
