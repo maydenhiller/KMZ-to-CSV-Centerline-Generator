@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-an1-one-linestring-per-file-v9"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-overwrite-template-draw-streams-v10"
 
 _TEMPLATE_ZLIB_B64 = (
     'eNrt2wd0VOWi9+GdoqJYwIbdXBVBBQt2sUXsoqLYO2rUKCaaYC9g7733a++F2Luo2BV7V+y994I3'
@@ -653,6 +653,11 @@ def _ole_stream_path_to_parts(stream_path: str) -> List[str]:
     return [p for p in stream_path.replace("\\", "/").split("/") if p]
 
 
+def _annotate_workspace_leaf_name(full_stream_path: str) -> str:
+    """e.g. ``.../Our CL CL (2)`` -> ``Our CL CL (2)`` for ``Annotate.Filenames`` / stream names."""
+    return full_stream_path.replace("\\", "/").rstrip("/").split("/")[-1]
+
+
 def list_annotate_cl_stream_paths(ole) -> List[str]:
     out: List[Tuple[str, str]] = []
     for s in ole.listdir():
@@ -759,10 +764,12 @@ def build_dmt_bytes(
                 "Could not fit geometry into the DeLorme template after simplification."
             )
 
-    # XMap appears to expect the embedded stream name to match the basename referenced by
-    # C:\DeLorme Docs\Draw\<name>.an1 (see Example.dmt). Use CenterlineN instead of the
-    # template’s "Our CL …" slot names.
-    display_names = [f"Centerline{i+1}" for i in range(n)]
+    # Write into the **template’s existing** draw streams (``Our CL CL (2)``, ``Other CL 1 CL (2)``, …).
+    # Creating *new* streams (e.g. ``Centerline1``) while leaving the template slots as
+    # placeholders leaves XMap showing a **blank map** — it renders the named template layers,
+    # not the extra streams. ``Annotate.Filenames`` must reference the same leaf names as
+    # those OLE streams (``C:\\DeLorme Docs\\Draw\\<leaf>.an1`` + ``<leaf>`` pairs).
+    display_names = [_annotate_workspace_leaf_name(p) for p in template_stream_paths]
     fn_body = build_annotate_filenames_centerlines_only(display_names)
     af_body = build_annotate_active_filenames(display_names[0])
     fn_padded = pad_stream(fn_body, annotate_filenames_size, pad_byte=0)
@@ -787,8 +794,7 @@ def build_dmt_bytes(
         finally:
             ole_read.close()
         for j in range(n):
-            out_path = f"{_ANNOTATE_WORKSPACE}/{display_names[j]}"
-            parts = _ole_stream_path_to_parts(out_path)
+            parts = _ole_stream_path_to_parts(template_stream_paths[j])
             try:
                 writer.editEntry(parts, data=line_payloads[j])
             except Exception:
@@ -836,7 +842,7 @@ def build_dmt_bytes(
         shutil.copyfile(str(template_path), tmp)
         with olefile.OleFileIO(tmp, write_mode=True) as ole_w:
             for j in range(n):
-                ole_w.write_stream(stream_paths[j], line_payloads[j])
+                ole_w.write_stream(template_stream_paths[j], line_payloads[j])
             ole_w.write_stream(_STREAM_ANNOTATE_FILENAMES, fn_padded)
             ole_w.write_stream(_STREAM_ANNOTATE_ACTIVE_FILENAMES, af_padded)
         with open(tmp, "rb") as f:
