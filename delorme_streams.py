@@ -457,7 +457,7 @@ def embed_centerline_txt_stream(
         raise RuntimeError(
             "Embedding Centerline.txt into .dmt requires the Python package `extract-msg`.\n\n"
             "Fix: add this line to your repo's requirements.txt and redeploy:\n"
-            "extract-msg==0.48.11\n"
+            "extract-msg==0.55.0\n"
         ) from e
 
     # OleWriter works with files; materialize to a temp path, edit, then read back.
