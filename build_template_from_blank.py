@@ -33,17 +33,14 @@ import olefile  # noqa: E402
 from extract_msg import OleWriter  # noqa: E402
 
 from delorme_streams import (  # noqa: E402
+    ANNOTATE_LINE_HEADER96,
     build_annotate_line_stream,
     pad_stream,
     kml_abgr_to_colorref,
 )
 
-# First 96 bytes of a valid DeLorme annotate line stream (from a working template).
-_HEADER96 = bytes.fromhex(
-    "cf010000252d0000000000000200000000000200010000000b000041282700000000000002000200000017"
-    "0000010000000000fcb1c16900000000fcb1c169000000000400000000ffffff00000300000000000000"
-    "0000000000000000020002"
-)
+# Same 96-byte header the app uses when encoding lines (real XMap object, not the old placeholder).
+_HEADER96 = ANNOTATE_LINE_HEADER96
 
 BLANK = _REPO / "blank.dmt"
 OUT = _REPO / "template.dmt"
