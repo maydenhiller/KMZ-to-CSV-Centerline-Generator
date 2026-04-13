@@ -30,7 +30,7 @@ _materialized_template: Optional[Path] = None
 
 # Bumped when DMT export logic changes; copied into the zip as ``_EXPORT_BUILD_INFO.txt`` so you
 # can confirm Streamlit deployed the matching ``delorme_streams.py`` (not a cached/old build).
-DMT_EXPORT_BUILD_ID = "20260413-dmt-length-prefix-inner-header91-v19"
+DMT_EXPORT_BUILD_ID = "20260413-dmt-map2d-center-on-data-v20"
 
 # If False (default), ``Annotate.Filenames`` uses **empty** external path strings and
 # ``Annotate.ActiveFilenames`` points at the embedded stream leaf name. Geometry lives only
@@ -550,6 +550,62 @@ _ANNOTATE_WORKSPACE = "DeLormeComponents/DeLorme.Annotate.Workspace"
 _STREAM_ANNOTATE_FILENAMES = f"{_ANNOTATE_WORKSPACE}/Annotate.Filenames"
 _STREAM_ANNOTATE_ACTIVE_FILENAMES = f"{_ANNOTATE_WORKSPACE}/Annotate.ActiveFilenames"
 _DEFAULT_EMBED_TXT_STREAM = f"{_ANNOTATE_WORKSPACE}/Centerline.txt"
+_MAP2D_STATE = "DeLormeComponents/DeLorme.Map2D.1/Map2DState"
+_MAP2D_STATE2 = "DeLormeComponents/DeLorme.Map2D.1/Map2DState2"
+
+
+def _bbox_center_lat_lon(
+    lines: Sequence[Sequence[Tuple[float, float]]],
+) -> Tuple[float, float]:
+    """Center of axis-aligned bounding box of all (lat, lon) points."""
+    lats: List[float] = []
+    lons: List[float] = []
+    for line in lines:
+        for lat, lon in _lat_lon_pairs_only(list(line)):
+            lats.append(lat)
+            lons.append(lon)
+    if not lats:
+        return (35.0, -100.0)
+    return ((min(lats) + max(lats)) / 2.0, (min(lons) + max(lons)) / 2.0)
+
+
+def _patch_map2d_state_stream(data: bytes, center_lat: float, center_lon: float) -> bytes:
+    """
+    Patch ``Map2DState`` / ``Map2DState2`` so the map opens centered on the data.
+
+    Verified against Street Atlas 2015 reference projects: bytes ``4:12`` hold
+    ``EncodeOrd(-lon)``, ``EncodeOrd(lat)`` (same convention as draw vertices). The same
+    8-byte pair is repeated at offset **45** in 54-byte streams.
+    """
+    if len(data) < 53:
+        return data
+    pack8 = struct.pack(
+        "<II",
+        encode_ord_deg(-float(center_lon)) & 0xFFFFFFFF,
+        encode_ord_deg(float(center_lat)) & 0xFFFFFFFF,
+    )
+    buf = bytearray(data)
+    buf[4:12] = pack8
+    # Second copy of map center at offset 45 (54-byte ``Map2DState``; user reference .dmt).
+    if len(buf) >= 53:
+        buf[45:53] = pack8
+    return bytes(buf)
+
+
+def patch_dmt_map_view_center(dmt_path: str, lines: Sequence[Sequence[Tuple[float, float]]]) -> None:
+    """Rewrite Map2D view streams in-place on a materialized ``.dmt`` file."""
+    import olefile
+
+    lat, lon = _bbox_center_lat_lon(lines)
+    with olefile.OleFileIO(dmt_path, write_mode=True) as ole:
+        for sp in (_MAP2D_STATE, _MAP2D_STATE2):
+            try:
+                raw = ole.openstream(sp).read()
+            except Exception:
+                continue
+            patched = _patch_map2d_state_stream(raw, lat, lon)
+            if patched != raw:
+                ole.write_stream(sp, patched)
 
 
 def embed_centerline_txt_stream(
@@ -924,6 +980,7 @@ def build_dmt_bytes(
         os.close(fd)
         try:
             writer.write(tmp_path)
+            patch_dmt_map_view_center(tmp_path, ordered_lat_lon_lines)
             with open(tmp_path, "rb") as f:
                 return f.read(), note
         finally:
@@ -955,6 +1012,7 @@ def build_dmt_bytes(
                 ole_w.write_stream(template_stream_paths[j], line_payloads[j])
             ole_w.write_stream(_STREAM_ANNOTATE_FILENAMES, fn_padded)
             ole_w.write_stream(_STREAM_ANNOTATE_ACTIVE_FILENAMES, af_padded)
+        patch_dmt_map_view_center(tmp, ordered_lat_lon_lines)
         with open(tmp, "rb") as f:
             return f.read(), note
     finally:
