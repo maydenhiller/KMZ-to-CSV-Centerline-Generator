@@ -445,26 +445,20 @@ def embed_centerline_txt_stream(
     portable place to stash the exact TXT you would otherwise import via Draw → Import.
     """
     import os
-    import subprocess
-    import sys
     import tempfile
 
     import olefile
 
-    def _import_olewriter():
-        from extract_msg import OleWriter  # type: ignore
-
-        return OleWriter
-
     try:
-        OleWriter = _import_olewriter()
-    except Exception:  # pragma: no cover
-        # Streamlit Cloud / copy-paste deploy friendliness: attempt install automatically.
-        # This keeps the repo "just works" even if requirements didn't get applied.
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "extract-msg"]
-        )
-        OleWriter = _import_olewriter()
+        from extract_msg import OleWriter  # type: ignore
+    except Exception as e:  # pragma: no cover
+        # Streamlit typically cannot `pip install` at runtime (no internet / locked env).
+        # Make the fix copy-pasteable: ensure requirements.txt includes extract-msg.
+        raise RuntimeError(
+            "Embedding Centerline.txt into .dmt requires the Python package `extract-msg`.\n\n"
+            "Fix: add this line to your repo's requirements.txt and redeploy:\n"
+            "extract-msg==0.48.11\n"
+        ) from e
 
     # OleWriter works with files; materialize to a temp path, edit, then read back.
     fd_in, tmp_in = tempfile.mkstemp(suffix=".dmt", prefix="kmz_cl_in_")
