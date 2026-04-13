@@ -10,7 +10,6 @@ from lxml import etree
 from delorme_streams import (
     DMT_EXPORT_BUILD_ID,
     build_dmt_bytes,
-    embed_centerline_txt_stream,
     kml_abgr_to_colorref,
     kml_abgr_to_hex_display,
     resolve_template_dmt_path,
@@ -345,20 +344,16 @@ The generated **.dmt** encodes the same geometry/colors and also stashes a copy 
     dmt_bytes: Optional[bytes] = None
     try:
         tpl = resolve_template_dmt_path()
-        dmt_bytes, dmt_note = build_dmt_bytes(tpl, all_lines, colorrefs)
+        dmt_bytes, dmt_note = build_dmt_bytes(
+            tpl,
+            all_lines,
+            colorrefs,
+            centerline_txt_bytes=lines_to_txt_bytes(all_lines),
+        )
         if dmt_note:
             st.info(dmt_note)
     except Exception as e:
         st.warning(f"Could not build combined .dmt (DeLorme file): {e}")
-    else:
-        # Store the same TXT you would import in XMap inside the .dmt container
-        # at the same internal location as the draw layers.
-        try:
-            dmt_bytes = embed_centerline_txt_stream(
-                dmt_bytes, lines_to_txt_bytes(all_lines)
-            )
-        except Exception as e:
-            st.warning(f"Built .dmt, but could not embed Centerline.txt inside it: {e}")
 
     zip_buffer = io.BytesIO()
     processed_any = False
@@ -373,7 +368,7 @@ The generated **.dmt** encodes the same geometry/colors and also stashes a copy 
             processed_any = True
 
             with st.expander(f"Preview: {original_name}", expanded=(len(per_file) == 1)):
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width="stretch")
 
             zf.writestr(csv_name, dataframe_to_csv_bytes(df))
             zf.writestr(txt_name, lines_to_txt_bytes(lines))
