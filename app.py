@@ -7,8 +7,12 @@ import streamlit as st
 import pandas as pd
 from lxml import etree
 
+from dmt_export import extract_line_placemarks, generate_centerline_dmt
+
 APP_TITLE = "KMZ/KML to CSV Centerline Generator"
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
+
+COMBINED_DMT_BASE = "Combined CLs"
 
 
 def read_kml_from_kmz(kmz_bytes: bytes) -> Optional[bytes]:
@@ -90,9 +94,8 @@ def lines_to_txt_bytes(lines: List[List[Tuple[float, float]]]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
-def process_upload(uploaded) -> Tuple[pd.DataFrame, List[List[Tuple[float, float]]]]:
-    raw = uploaded.read()
-    if uploaded.name.lower().endswith(".kmz"):
+def process_kmz_bytes(name: str, raw: bytes) -> Tuple[pd.DataFrame, List[List[Tuple[float, float]]]]:
+    if name.lower().endswith(".kmz"):
         kml_bytes = read_kml_from_kmz(raw)
         if kml_bytes is None:
             raise ValueError("No KML file found inside the KMZ.")
@@ -110,7 +113,8 @@ def main():
     st.set_page_config(page_title=APP_TITLE, layout="centered")
     st.title(APP_TITLE)
     st.caption(
-        "Upload one or more KMZ/KML files. The app will extract LineString coordinates and export them as CSV and TXT."
+        "Upload one or more KMZ/KML files. The app will extract LineString coordinates "
+        "and export them as CSV, TXT, and a DeLorme .dmt (Draw-tab centerline)."
     )
 
     uploads = st.file_uploader(
@@ -124,15 +128,18 @@ def main():
 
     zip_buffer = io.BytesIO()
     processed_any = False
+    dmt_placemarks = []  # line placemarks (with colors) from every upload, in order
+    base_names: List[str] = []
 
     with zipfile.ZipFile(zip_buffer, "w") as zf:
         for uploaded in uploads:
             base_name = Path(uploaded.name).stem
             csv_name = f"{base_name} CL.csv"
             txt_name = f"{base_name} CL.txt"
+            raw = uploaded.read()
 
             try:
-                df, lines = process_upload(uploaded)
+                df, lines = process_kmz_bytes(uploaded.name, raw)
             except Exception as e:
                 st.error(f"Error processing `{uploaded.name}`: {e}")
                 continue
@@ -142,6 +149,7 @@ def main():
                 continue
 
             processed_any = True
+            base_names.append(base_name)
 
             with st.expander(f"Preview: {uploaded.name}", expanded=(len(uploads) == 1)):
                 st.dataframe(df, use_container_width=True)
@@ -149,13 +157,27 @@ def main():
             zf.writestr(csv_name, dataframe_to_csv_bytes(df))
             zf.writestr(txt_name, lines_to_txt_bytes(lines))
 
+            # Collect the same linestrings (plus their KML colors) for the .dmt.
+            try:
+                dmt_placemarks.extend(extract_line_placemarks(raw))
+            except Exception as e:
+                st.warning(f"Could not read line colors from `{uploaded.name}` for the DMT: {e}")
+
+        if dmt_placemarks:
+            dmt_base = base_names[0] if len(base_names) == 1 else COMBINED_DMT_BASE
+            dmt_name = f"{dmt_base} CL.dmt" if len(base_names) == 1 else f"{dmt_base}.dmt"
+            try:
+                zf.writestr(dmt_name, generate_centerline_dmt(dmt_placemarks))
+            except Exception as e:
+                st.warning(f"CSV/TXT were generated, but the DMT failed: {e}")
+
     if not processed_any:
         st.info("No valid LineString data found to export.")
         return
 
     zip_buffer.seek(0)
     st.download_button(
-        label="Download CSV + TXT (zipped)",
+        label="Download CSV + TXT + DMT (zipped)",
         data=zip_buffer,
         file_name="Centerline_Files.zip",
         mime="application/zip",
