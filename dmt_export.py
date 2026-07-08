@@ -1329,6 +1329,36 @@ def _style_line_color(style_el):
     return c.text.strip() if c is not None and c.text else None
 
 
+def _parse_kml_forgiving(raw):
+    """Parse KML that may not be strictly well-formed.
+
+    Real-world exports (e.g. ArcGIS "Export To KMZ") sometimes reference
+    undeclared namespace prefixes like ``xsi:schemaLocation``, which the strict
+    stdlib parser rejects ("unbound prefix"). Fall back to lxml's recovering
+    parser, then round-trip through tostring so the rest of the code keeps
+    working with plain xml.etree elements.
+    """
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError:
+        from lxml import etree as _lxml
+
+        parser = _lxml.XMLParser(recover=True, ns_clean=True, huge_tree=True)
+        root = _lxml.fromstring(raw, parser=parser)
+        if root is None:
+            raise
+        # recover=True keeps attributes whose prefix was never declared
+        # (stored with a literal "prefix:name" key); drop them so the
+        # re-serialized document is well-formed for the stdlib parser.
+        for el in root.iter():
+            if not isinstance(el.tag, str):
+                continue
+            for k in list(el.attrib):
+                if not k.startswith('{') and ':' in k:
+                    del el.attrib[k]
+        return ET.fromstring(_lxml.tostring(root))
+
+
 def extract_line_placemarks(kml_or_kmz_bytes):
     """All LineStrings in a KMZ/KML (document order) as line Placemarks.
 
@@ -1339,7 +1369,7 @@ def extract_line_placemarks(kml_or_kmz_bytes):
     raw = kml_or_kmz_bytes
     if isinstance(raw, (bytes, bytearray)) and raw[:2] == b'PK':
         raw = _read_kml_bytes(bytes(raw))
-    root = ET.fromstring(raw)
+    root = _parse_kml_forgiving(raw)
 
     styles, stylemaps = {}, {}
     for el in root.iter():
