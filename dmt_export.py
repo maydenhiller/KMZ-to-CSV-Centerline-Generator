@@ -1454,6 +1454,16 @@ def generate_centerline_dmt(line_placemarks):
 
     new_streams = {'Centerline41 (4)': t.build(lns, color_fn)}
 
+    # Rebuild the other three draw layers as EMPTY (zero objects) so none of
+    # the template's example content (AGM symbols, key-map notes, access
+    # lines) shows up in the output — only the centerline geometry remains.
+    new_streams['Final AGMs68'] = PointLayerTemplate(
+        streams['Final AGMs68'], has_symbol=True).build([], None)
+    new_streams['notes (26)'] = PointLayerTemplate(
+        streams['notes (26)'], has_symbol=False).build([], None)
+    new_streams['Combined Access Files1 (11)'] = LineLayerTemplate(
+        streams['Combined Access Files1 (11)']).build([], None)
+
     rename = {
         'Final AGMs68': 'AGMs',
         'Combined Access Files1 (11)': 'Access',
