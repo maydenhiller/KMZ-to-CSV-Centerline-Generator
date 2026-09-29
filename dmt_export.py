@@ -1431,6 +1431,32 @@ def extract_line_placemarks(kml_or_kmz_bytes):
     return out
 
 
+def _center_map_view(streams, new_streams, placemarks):
+    """Point the saved map view at the centre of the placemarks' bounding box.
+
+    The template's Map2DState / Map2DState2 streams store the view centre as an
+    encoded (lon, lat) pair -- the same enc() format used for vertices -- and
+    each stream holds it twice. Every occurrence of the template's centre pair is
+    replaced, so the .dmt opens on the data anywhere in the country instead of
+    the template's Missouri/Iowa view. Zoom level is left as-is.
+    """
+    lons = [lon for pm in placemarks for lon, _ in pm.coords]
+    lats = [lat for pm in placemarks for _, lat in pm.coords]
+    if not lons:
+        return
+    c_lon = (min(lons) + max(lons)) / 2.0
+    c_lat = (min(lats) + max(lats)) / 2.0
+    new_pair = struct.pack('<II', *enc(c_lon, c_lat))
+    for name in ('Map2DState', 'Map2DState2'):
+        data = streams.get(name)
+        if not data or len(data) < 12:
+            continue
+        old_pair = bytes(data[4:12])          # template centre, first copy
+        patched = bytes(data).replace(old_pair, new_pair)
+        if patched != bytes(data):
+            new_streams[name] = patched
+
+
 def generate_centerline_dmt(line_placemarks):
     """Build a .dmt whose Centerline draw layer holds the given lines.
 
@@ -1475,4 +1501,5 @@ def generate_centerline_dmt(line_placemarks):
     layer_names = [rename[o] for o in order]
     new_streams['Annotate.Filenames'] = _filenames_stream('Centerline', layer_names)
     new_streams['Annotate.ActiveFilenames'] = _active_stream('Centerline')
+    _center_map_view(streams, new_streams, lns)
     return write_ole(tpl, new_streams, rename=rename)
